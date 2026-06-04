@@ -1,0 +1,99 @@
+data:
+  train_files: data/easyr1_resplan/train
+  val_files: data/easyr1_resplan/val
+  prompt_key: prompt
+  answer_key: ground_truth
+  image_key: images
+  max_prompt_length: 2048
+  max_response_length: 4096
+  rollout_batch_size: 16
+  val_batch_size: 32
+  format_prompt: config/easyr1/floorplan.jinja
+  shuffle: true
+  seed: 42
+  min_pixels: 262144
+  max_pixels: 1003520
+  filter_overlong_prompts: true
+algorithm:
+  adv_estimator: grpo
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 1.0e-2
+  online_filtering: false
+  filter_key: overall
+  filter_low: 0.01
+  filter_high: 0.99
+worker:
+  actor:
+    global_batch_size: 16
+    micro_batch_size_per_device_for_update: 1
+    micro_batch_size_per_device_for_experience: 1
+    max_grad_norm: 1.0
+    padding_free: true
+    dynamic_batching: true
+    ulysses_size: 1
+    model:
+      model_path: Qwen/Qwen3-VL-8B-Instruct
+      enable_gradient_checkpointing: true
+      trust_remote_code: true
+      freeze_vision_tower: false
+      lora:
+        rank: 64
+        alpha: 128
+        target_modules: all-linear
+        exclude_modules: ".*visual.*"
+    optim:
+      lr: 5.0e-7
+      weight_decay: 1.0e-2
+      strategy: adamw
+      lr_warmup_ratio: 0.0
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false
+      enable_rank0_init: true
+    offload:
+      offload_params: true
+      offload_optimizer: true
+  rollout:
+    n: 5
+    temperature: 1.0
+    top_p: 1.0
+    limit_images: 1
+    gpu_memory_utilization: 0.5
+    enforce_eager: false
+    enable_chunked_prefill: false
+    tensor_parallel_size: 2
+    disable_tqdm: false
+    val_override_config:
+      temperature: 0.6
+      top_p: 0.95
+      n: 1
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: true
+      enable_rank0_init: true
+    offload:
+      offload_params: false
+  reward:
+    reward_function: scripts/easyr1_reward.py:compute_score
+trainer:
+  total_epochs: 10
+  max_steps: null
+  project_name: rl_vectorizer
+  experiment_name: qwen3_vl_8b_floorplan_grpo
+  logger: ["console", "file", "tensorboard", "wandb"]
+  nnodes: 1
+  n_gpus_per_node: 8
+  max_try_make_batch: 20
+  val_freq: 5
+  val_before_train: true
+  val_only: false
+  val_generations_to_log: 5
+  save_freq: 5
+  save_limit: 3
+  save_model_only: false
+  save_checkpoint_path: null
+  load_checkpoint_path: null
+  find_last_checkpoint: true

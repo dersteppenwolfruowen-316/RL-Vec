@@ -1,0 +1,33 @@
+defaults:
+  - override /model: qwen3_vl_8b
+  - override /training: grpo_train
+  - override /reward: ensemble
+  - _self_
+
+name: grpo_tower_v1
+
+data:
+  dataset: tower_synthetic
+  max_samples: 100
+
+training:
+  batch_size: 2
+  gradient_accumulation: 8
+  epochs: 10
+
+grpo:
+  group_size: 4
+  kl_beta: 0.1
+  reward_normalize: true
+  adv_estimator: mean
+
+reward:
+  weights:
+    ssim: 0.45
+    clip: 0.35
+    keypoint: 0.15
+    complexity: 0.05
+    self_reward: 0.0
+
+experiment:
+  name: grpo_tower_v1

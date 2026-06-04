@@ -1,0 +1,22 @@
+base_model: Qwen/Qwen3-VL-8B-Instruct
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+quantization: null  # null, 4bit, or 8bit
+
+use_flash_attention: true
+
+torch_dtype: bfloat16
+
+device_map: auto

@@ -1,0 +1,26 @@
+defaults:
+  - override /training: sft_warmup
+  - _self_
+
+name: domain_adaptation_v1
+
+data:
+  datasets:
+    - name: svgstack
+      data_dir: ./data/svgstack
+      max_samples: 100000
+      split: train
+
+  weights: [1.0]
+
+  sampling_strategy: round_robin
+
+training:
+  type: sft
+  batch_size: 8
+  gradient_accumulation: 2
+  epochs: 3
+  lr: 1e-4
+
+experiment:
+  name: domain_adaptation_v1

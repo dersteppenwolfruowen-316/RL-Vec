@@ -1,0 +1,46 @@
+defaults:
+  - override /training: grpo_train
+  - override /reward: ensemble
+  - _self_
+
+name: mixed_training_v1
+
+data:
+  datasets:
+    - name: svgstack
+      data_dir: ./data/svgstack
+      max_samples: 50000
+      split: train
+    - name: tower
+      data_dir: ./data/tower
+      max_samples: 100
+      split: train
+    - name: resplan
+      data_dir: ./data/resplan
+      max_samples: 5000
+      split: train
+
+  weights: [0.70, 0.15, 0.15]
+
+  sampling_strategy: weighted
+
+training:
+  batch_size: 4
+  gradient_accumulation: 4
+  epochs: 10
+
+grpo:
+  group_size: 8
+  kl_beta: 0.1
+  reward_normalize: true
+
+reward:
+  weights:
+    ssim: 0.40
+    clip: 0.30
+    keypoint: 0.20
+    complexity: 0.10
+    self_reward: 0.05
+
+experiment:
+  name: mixed_training_v1

@@ -1,0 +1,193 @@
+Metadata-Version: 2.4
+Name: rl-vectorizer
+Version: 0.1.0
+Summary: Reward-driven raster-to-vector training toolkit for engineering drawings.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.1.0
+Requires-Dist: transformers>=4.40.0
+Requires-Dist: peft>=0.10.0
+Requires-Dist: accelerate>=0.27.0
+Requires-Dist: datasets>=2.18.0
+Requires-Dist: pillow>=10.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: scikit-image>=0.22.0
+Requires-Dist: opencv-python>=4.9.0
+Requires-Dist: lxml>=5.1.0
+Requires-Dist: cairosvg>=2.7.0
+Requires-Dist: hydra-core>=1.3.0
+Requires-Dist: omegaconf>=2.3.0
+Requires-Dist: tensorboard>=2.16.0
+Requires-Dist: tqdm>=4.66.0
+Requires-Dist: requests>=2.31.0
+Provides-Extra: training
+Requires-Dist: bitsandbytes>=0.41.0; extra == "training"
+Requires-Dist: open-clip-torch>=2.24.0; extra == "training"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Provides-Extra: segmentation
+Requires-Dist: segment-anything; extra == "segmentation"
+
+# RL Vectorizer
+
+工程图纸矢量化引擎。
+
+## 核心架构
+
+```
+图纸输入
+    ↓
+┌─────────────────────────┐
+│  Segment 模块（切分）          │
+│  SAM / Grid / Connectivity  │
+└─────────────────────────┘
+    ↓
+┌─────────────────────────┐
+│  矢量化                   │
+│  传统 / RL 生成           │
+└─────────────────────────┘
+    ↓
+┌─────────────────────────┐
+│  融合模块                │
+│  拼接 + 约束求解          │
+└─────────────────────────┘
+    ↓
+┌─────────────────────────┐
+│  输出 SVG / DXF / DWG     │
+└─────────────────────────┘
+```
+
+## 快速开始
+
+### 1. 图纸切分
+
+```python
+from rl_vectorizer.segment import HybridSegmenter
+
+segmenter = HybridSegmenter(use_sam=True, grid_size=512)
+regions = segmenter.segment(image, mode="auto")
+```
+
+### 2. 矢量化
+
+```python
+# 方案A: 传统
+from TAI_drawing.skeleton import skeleton_centerline
+svg = skeleton_centerline(region_image)
+
+# 方案B: RL
+from rl_vectorizer.models import QwenVLModel
+model = QwenVLModel()
+svg = model.generate_svg(region_image)
+```
+
+### 3. 拼接
+
+```python
+# TODO: 拼接模块
+merged_svg = merge_svg_regions(regions)
+```
+
+## 项目状态
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| Segment | ✅ 完成 | SAM/Grid/Connectivity |
+| 传统矢量化 | ✅ 引用 TAI_drawing | 98.9% 覆盖率 |
+| RL 训练 | ✅ | GRPO + Qwen3-VL |
+| 拼接模块 | ⏳ 待实现 | - |
+| CAD 导出 | ⏳ 待实现 | - |
+
+## 安装
+
+```bash
+# 推荐：作为本地可编辑 Python package 安装
+pip install -e .
+
+# 或仅安装依赖
+pip install -r requirements.txt
+pip install segment-anything
+```
+
+## 目录结构
+
+```text
+rl_vectorizer/
+├── src/rl_vectorizer/     # Python 源码包，必须纳入 Git
+│   ├── data/              # Dataset / dataloader 源码，不是训练数据
+│   ├── models/            # Qwen-VL / VLM 封装
+│   ├── reward/            # Reward 组件
+│   ├── training/          # 训练器与算法原型
+│   └── utils/             # SVG 渲染、验证、后处理工具
+├── data/                  # 本地数据集 / 下载语料，默认不纳入 Git
+├── config/                # 实验、模型、reward 配置
+├── scripts/               # 数据准备、训练和测试脚本
+└── docs/                  # Sphinx 技术文档
+```
+
+## Qwen-VL 接入检查
+
+```bash
+# 轻量 smoke test：只检查包结构、依赖和 transformers 模型类，不下载/加载大模型
+python scripts/test_qwen3_vl.py
+
+# 真正加载 HuggingFace 模型，会下载权重并需要较大的 GPU/RAM
+python scripts/test_qwen3_vl.py --load-model
+
+# 如果当前 transformers 不支持 Qwen3-VL，可以先检查 Qwen2.5-VL
+python scripts/test_qwen3_vl.py --model Qwen/Qwen2.5-VL-3B-Instruct
+```
+
+## 文档
+
+### 在线文档
+
+项目使用 Sphinx 构建技术文档，构建命令：
+
+```bash
+# 安装 Sphinx 及主题（如果未安装）
+conda run -n rag pip install sphinx sphinx-book-theme
+
+# 构建文档
+conda run -n rag sphinx-build -b html docs docs/_build/html
+```
+
+构建完成后，HTML 文件位于 `docs/_build/html/index.html`，用浏览器打开即可查看。
+
+### 本地开发
+
+如果需要在修改文档后实时预览：
+
+```bash
+# 安装自动重建工具
+conda run -n rag pip install sphinx-autobuild
+
+# 启动实时预览服务器
+conda run -n rag sphinx-autobuild docs docs/_build/html --host 0.0.0.0 --port 8000
+```
+
+访问 http://localhost:8000 即可实时查看文档更新。
+
+### 文档结构
+
+```
+docs/
+├── index.rst          # 首页（项目背景、快速开始）
+├── getting_started.rst # 快速入门
+├── architecture.rst   # 技术架构
+├── training.rst       # 训练流程
+├── reward_system.rst  # Reward 系统
+├── configuration.rst  # 配置管理
+├── datasets.rst       # 数据集说明
+├── tutorials.rst      # 高级教程
+├── faq.rst           # 常见问题
+├── api/              # API 文档
+└── conf.py           # Sphinx 配置
+```
+
+### 其他文档
+
+- [技术方案](plan.md)
+- [架构设计](ARCHITECTURE.md)
+- [切分模块](SEGMENTATION_GUIDE.md)
+- [问题追踪](TECHNICAL_ISSUES.md)

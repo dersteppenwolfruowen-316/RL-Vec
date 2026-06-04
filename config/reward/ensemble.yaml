@@ -1,0 +1,23 @@
+weights:
+  ssim: 0.30
+  clip: 0.20
+  keypoint: 0.15
+  complexity: 0.10
+  self_reward: 0.00
+  geometric: 0.15
+  adversarial: 0.10
+
+penalty:
+  invalid_svg: 0.50
+
+geometric:
+  tolerance: 5.0
+  min_connectivity: 0.5
+  expected_angle: null
+  angle_tolerance: 10.0
+
+adversarial:
+  check_duplication: true
+  check_trivial: true
+  check_random: true
+  max_repetition: 3

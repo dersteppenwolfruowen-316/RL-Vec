@@ -211,14 +211,18 @@ def train(args):
     user_prompt = "Convert this architectural floor plan to SVG format. First analyze its structure, then generate the SVG step by step."
     global_step = 0
 
+    # 提前处理所有样本，避免训练时反复调用 processor.image_processor 累积缓存
+    print("Pre-processing all samples...")
+    processed_samples = []
+    for sample in tqdm(samples, desc="Pre-process"):
+        processed_samples.append(process_sample(sample, processor, user_prompt))
+    print(f"Pre-processed {len(processed_samples)} samples")
+
     for epoch in range(args.epochs):
         total_loss = 0.0
-        pbar = tqdm(samples, desc=f"Epoch {epoch + 1}/{args.epochs}")
+        pbar = tqdm(processed_samples, desc=f"Epoch {epoch + 1}/{args.epochs}")
 
-        for i, sample in enumerate(pbar):
-            # 处理单个样本
-            batch = process_sample(sample, processor, user_prompt)
-
+        for i, batch in enumerate(pbar):
             # 放到设备
             model_kwargs = {}
             for k, v in batch.items():

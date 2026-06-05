@@ -1,312 +1,308 @@
 """SFT 训练脚本 — 使用中间指令数据微调 Qwen-VL。
 
 用法:
-  # CPU 测试（极小数据量）
-  python scripts/train_sft.py --max-samples 4 --epochs 1 --cpu
+  # Dry run（验证数据）
+  python scripts/train_sft.py --dry-run
 
-  # 单 GPU
-  python scripts/train_sft.py --batch-size 2 --lr 1e-4
+  # Colab / GPU
+  python scripts/train_sft.py --max-samples 200 --batch-size 1 --epochs 3 --lr 1e-4
 
-  # 多 GPU (DeepSpeed)
-  accelerate launch scripts/train_sft.py --batch-size 4 --lr 1e-4 --deepspeed
+  # CPU 调试（极小数据）
+  python scripts/train_sft.py --max-samples 2 --epochs 1 --cpu
 """
-import sys, os, json, argparse
+import sys, os, json, argparse, gc
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import torch
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import AdamW
+from PIL import Image
 from tqdm import tqdm
 
-
-# ---------- Dataset ----------
-class SFTDataset(Dataset):
-    """从 sft_train.jsonl 加载 SFT 训练数据。"""
-
-    def __init__(self, jsonl_path: str, max_samples: int = None, image_root: str = None):
-        self.samples = []
-        with open(jsonl_path) as f:
-            for i, line in enumerate(f):
-                if max_samples and i >= max_samples:
-                    break
-                self.samples.append(json.loads(line.strip()))
-        self.image_root = image_root or str(Path(jsonl_path).parent)
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        return self.samples[idx]
+# ── Environment tweaks ─────────────────────────────
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def collate_fn(batch, processor, device="cpu"):
-    """将 batch 样本处理为模型输入。
+# ── Data ────────────────────────────────────────────
+def load_samples(jsonl_path: str, max_samples: int = None) -> list:
+    samples = []
+    with open(jsonl_path) as f:
+        for i, line in enumerate(f):
+            if max_samples and i >= max_samples:
+                break
+            samples.append(json.loads(line.strip()))
+    return samples
 
-    返回: {"input_ids": ..., "attention_mask": ..., "labels": ..., "pixel_values": ...}
+
+def load_image(sample: dict, data_root: str = "data/resplan") -> Image.Image:
+    """加载图像并缩放到 224x224 降低显存。"""
+    img_path = sample["image"]
+    if not os.path.isabs(img_path):
+        img_path = os.path.join(data_root, "bitmaps", os.path.basename(img_path))
+    try:
+        return Image.open(img_path).convert("RGB").resize((224, 224))
+    except Exception:
+        return Image.new("RGB", (224, 224), "white")
+
+
+def process_sample(sample: dict, processor, user_prompt: str):
+    """处理单个样本，返回模型输入 dict。
+
+    先通过 image_processor 获取正确 patch 数，
+    再用 tokenizer 手动插入 <|image_pad|> token IDs。
     """
-    from PIL import Image
+    img = load_image(sample)
+    asst_text = sample["conversations"][1]["value"]
 
-    user_text = "Convert this architectural floor plan to SVG format. First analyze its structure, then generate the SVG step by step."
-    texts = []
-    images = []
+    # 1) 提取图像特征和 grid 信息
+    # 传入 min_pixels 防止 224px 图像被强制放大（默认 min_pixels=262144 会放大到 ~512px）
+    image_inputs = processor.image_processor([img], return_tensors="pt", min_pixels=224*224)
+    pixel_values = image_inputs["pixel_values"]  # [1, C, H, W]
+    image_grid_thw = image_inputs["image_grid_thw"]  # [1, 3]
 
-    for sample in batch:
-        # 加载图像
-        img_path = sample["image"]
-        if not os.path.isabs(img_path):
-            img_path = os.path.join(
-                os.path.dirname(os.path.dirname(img_path)),
-                "bitmaps",
-                os.path.basename(img_path),
-            )
-        if os.path.exists(img_path):
-            images.append(Image.open(img_path).convert("RGB"))
-        else:
-            # 如果图像不存在，用空白占位
-            images.append(Image.new("RGB", (512, 512), "white"))
+    # 2) 计算 patch 数
+    t, h, w = image_grid_thw[0].tolist()
+    num_patches = int(t * h * w)
+    image_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+    if image_token_id is None:
+        # fallback: 从 added_tokens_encoder 找
+        image_token_id = processor.tokenizer.added_tokens_encoder.get("<|image_pad|>", 151889)
 
-        # 构造对话
-        assistant_text = sample["conversations"][1]["value"]
-        texts.append((user_text, assistant_text))
-
-    # 用 processor 处理
-    # Qwen 的 processor 支持 image + text 输入
-    inputs = processor(
-        text=[t[0] for t in texts],
-        images=images,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=4096,
+    # 3) 构建文本（不含 image tokens 占位符）
+    text = (
+        f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+        f"<|im_start|>assistant\n{asst_text}<|im_end|>"
     )
 
-    # 构造 labels：把 user 部分的 token 设为 -100（不参与 loss）
-    # 注意：这里需要 processor 返回 input_ids 的对应关系
-    # 对于 Qwen3-VL，需要分别 tokenize user 和 assistant 部分
+    # 4) tokenize 文本
+    token_ids = processor.tokenizer.encode(text, add_special_tokens=False)
 
-    # 更可靠的方法：对整个对话 tokenize，然后标记 assistant 部分
-    full_texts = []
-    for user_txt, asst_txt in texts:
-        full = f"<|im_start|>user\n<image>\n{user_txt}<|im_end|>\n<|im_start|>assistant\n{asst_txt}<|im_end|>"
-        full_texts.append(full)
+    # 5) 在 "user\n" 之后插入 image tokens
+    im_start_id = processor.tokenizer.convert_tokens_to_ids("<|im_start|>")
+    nl_id = processor.tokenizer.encode("\n", add_special_tokens=False)[0]
+    user_ids = processor.tokenizer.encode("user", add_special_tokens=False)
 
-    # 重新 tokenize 完整文本
-    model_inputs = processor(
-        text=full_texts,
-        images=images,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=4096,
-    )
+    insert_pos = None
+    for j in range(len(token_ids) - len(user_ids) - 1):
+        if (token_ids[j] == im_start_id
+                and token_ids[j + 1:j + 1 + len(user_ids)] == user_ids
+                and token_ids[j + len(user_ids) + 1] == nl_id):
+            insert_pos = j + len(user_ids) + 2  # "\n" 之后
+            break
+    if insert_pos is None:
+        insert_pos = 3  # fallback
 
-    # 构造 labels：assistant 部分保留 token，其余为 -100
-    labels = model_inputs["input_ids"].clone()
+    input_ids = token_ids[:insert_pos] + [image_token_id] * num_patches + token_ids[insert_pos:]
+    attention_mask = [1] * len(input_ids)
 
-    # 找到每个序列中 <|im_start|>assistant 的位置
-    asst_token_id = processor.tokenizer.encode("<|im_start|>assistant",
-                                                add_special_tokens=False)[0]
+    # 6) 计算 labels（mask user + image 部分）
+    labels = input_ids.copy()
+    im_start_positions = [k for k, tid in enumerate(input_ids) if tid == im_start_id]
+    if len(im_start_positions) >= 2:
+        # mask 第二个 <|im_start|> 之前的所有 token
+        for k in range(im_start_positions[1]):
+            labels[k] = -100
+    # image tokens 也 mask
+    for k in range(len(labels)):
+        if labels[k] == image_token_id:
+            labels[k] = -100
 
-    for i in range(labels.shape[0]):
-        seq = labels[i]
-        # 找到 assistant token 出现的位置
-        asst_positions = (seq == asst_token_id).nonzero(as_tuple=True)[0]
-        if len(asst_positions) > 0:
-            start_pos = asst_positions[0].item()
-            # start_pos 之前的所有 token（user 部分）设为 -100
-            labels[i, :start_pos] = -100
-        else:
-            # 如果找不到（fallback），整个序列参与 loss
-            pass
-
-    model_inputs["labels"] = labels
-    return model_inputs
+    return {
+        "input_ids": torch.tensor([input_ids], dtype=torch.long),
+        "attention_mask": torch.tensor([attention_mask], dtype=torch.long),
+        "labels": torch.tensor([labels], dtype=torch.long),
+        "pixel_values": pixel_values,
+        "image_grid_thw": image_grid_thw,
+    }
 
 
-# ---------- 训练 ----------
+# ── Training ────────────────────────────────────────
 def train(args):
     if args.dry_run:
-        print("=== DRY RUN: testing data pipeline only ===")
         _dry_run(args)
         return
-    if args.cpu:
-        device = "cpu"
-        torch_dtype = torch.float32
-    elif torch.cuda.is_available():
-        device = "cuda"
-        torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    else:
-        device = "cpu"
-        torch_dtype = torch.float32
-        print("CUDA not available, falling back to CPU")
 
-    print(f"Device: {device}, dtype: {torch_dtype}")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    print(f"Device: {device}, dtype: {dtype}")
 
-    # 加载模型
-    from rl_vectorizer.models.qwen_vl import QwenVLModel
+    # ── Load model ──────────────────────────────────
+    from transformers import (
+        Qwen2_5_VLForConditionalGeneration,
+        AutoProcessor,
+        BitsAndBytesConfig,
+    )
+    from peft import LoraConfig, get_peft_model, TaskType
 
-    model = QwenVLModel(
-        base_model_name=args.model_name,
-        lora_rank=args.lora_rank,
+    quant_kwargs = {}
+    if args.quantization == "4bit":
+        quant_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=dtype,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+    elif args.quantization == "8bit":
+        quant_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        args.model_name,
+        torch_dtype=dtype,
+        device_map="auto",
+        **quant_kwargs,
+    )
+    processor = AutoProcessor.from_pretrained(args.model_name, use_fast=False)
+
+    # LoRA
+    lora_cfg = LoraConfig(
+        r=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=0.05,
-        device=device,
-        quantization=args.quantization,
-        use_flash_attention=not args.cpu,
-        torch_dtype=torch_dtype,
-        # CPU 训练时禁用 device_map="auto"（会触发自动分布到多设备）
-        device_map="auto" if device == "cuda" else None,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
     )
+    model = get_peft_model(model, lora_cfg)
+    model.print_trainable_parameters()
+    model.train()
+    model.config.use_cache = False
+    model.enable_input_require_grads()
+    model.gradient_checkpointing_enable()
+    print("Gradient checkpointing enabled")
 
-    if args.cpu:
-        model.model = model.model.to(device)
-        model.model.eval()
+    # freeze vision encoder（省 ~4GB 显存）
+    vision = model.base_model.model.model.visual
+    for p in vision.parameters():
+        p.requires_grad = False
+    print("Vision encoder frozen")
 
-    processor = model.processor
+    # ── Load data ───────────────────────────────────
+    samples = load_samples(args.data_path, args.max_samples)
+    print(f"Dataset: {len(samples)} samples")
 
-    # 加载数据
-    dataset = SFTDataset(
-        args.data_path,
-        max_samples=args.max_samples,
-    )
-    print(f"Dataset: {len(dataset)} samples")
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    print(f"Trainable params: {sum(p.numel() for p in trainable)}")
 
-    # DataLoader — dataloader 用自定义 collate
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=lambda b: collate_fn(b, processor, device),
-        num_workers=0,  # CPU 训练设为 0
-    )
+    # ── Optimizer ──────────────────────────────────
+    try:
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.AdamW8bit(trainable, lr=args.lr, weight_decay=0.01)
+        print("Using 8-bit AdamW")
+    except ImportError:
+        optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
 
-    # 优化器（只训练 LoRA 参数）
-    trainable_params = [p for p in model.model.parameters() if p.requires_grad]
-    optimizer = AdamW(trainable_params, lr=args.lr, weight_decay=0.01)
-    print(f"Trainable params: {sum(p.numel() for p in trainable_params)}")
-
-    # 训练循环
-    model.model.train()
+    # ── Train loop ─────────────────────────────────
+    user_prompt = "Convert this architectural floor plan to SVG format. First analyze its structure, then generate the SVG step by step."
     global_step = 0
 
     for epoch in range(args.epochs):
-        epoch_pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{args.epochs}")
+        total_loss = 0.0
+        pbar = tqdm(samples, desc=f"Epoch {epoch + 1}/{args.epochs}")
 
-        for batch in epoch_pbar:
-            # 移到设备
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
-            pixel_values = batch.get("pixel_values")
-            if pixel_values is not None:
-                pixel_values = pixel_values.to(device)
+        for i, sample in enumerate(pbar):
+            # 处理单个样本
+            batch = process_sample(sample, processor, user_prompt)
 
-            # Forward
-            outputs = model.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                pixel_values=pixel_values,
-            )
+            # 放到设备
+            model_kwargs = {}
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    model_kwargs[k] = v.to(model.device)
+                else:
+                    model_kwargs[k] = v
 
+            outputs = model(**model_kwargs)
             loss = outputs.loss
-
-            # Backward
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
+
+            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
             optimizer.step()
             optimizer.zero_grad()
 
             global_step += 1
-            epoch_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            total_loss += loss.item()
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
-            if global_step % args.log_interval == 0:
-                print(f"Step {global_step}: loss = {loss.item():.4f}")
+            if (i + 1) % args.log_interval == 0:
+                print(f"  Step {i + 1}/{len(samples)}  loss={loss.item():.4f}  avg={total_loss / (i + 1):.4f}")
 
-        # 每个 epoch 保存
+            # 手动清理显存
+            del batch, model_kwargs, outputs, loss
+            torch.cuda.empty_cache()
+
+        avg_loss = total_loss / len(samples)
+        print(f"Epoch {epoch + 1} done — Avg loss: {avg_loss:.4f}")
+
         if args.save_dir:
-            save_path = os.path.join(args.save_dir, f"epoch_{epoch + 1}")
-            model.save_pretrained(save_path)
-            print(f"Saved to {save_path}")
+            path = os.path.join(args.save_dir, f"epoch_{epoch + 1}")
+            os.makedirs(path, exist_ok=True)
+            model.save_pretrained(path)
+            print(f"Saved to {path}")
 
     print("Training complete!")
     if args.save_dir:
-        model.save_pretrained(os.path.join(args.save_dir, "final"))
-        print(f"Final model saved to {os.path.join(args.save_dir, 'final')}")
+        path = os.path.join(args.save_dir, "final")
+        model.save_pretrained(path)
+        print(f"Final model saved to {path}")
 
 
+# ── Dry run ────────────────────────────────────────
 def _dry_run(args):
     """在不加载模型的情况下验证数据处理流水线。"""
-    import json
-    from PIL import Image
     from transformers import AutoProcessor
 
-    # 读 2 条数据
-    samples = []
-    with open(args.data_path) as f:
-        for i, line in enumerate(f):
-            if i >= 2:
-                break
-            samples.append(json.loads(line.strip()))
-    print(f"Loaded {len(samples)} samples for dry run")
+    print("=== DRY RUN ===")
+    processor = AutoProcessor.from_pretrained(args.model_name, trust_remote_code=True, use_fast=False)
 
-    # 加载 processor（不需要加载模型权重）
-    processor = AutoProcessor.from_pretrained(args.model_name,
-                                               trust_remote_code=True,
-                                               use_fast=False)
+    samples = load_samples(args.data_path, max_samples=2)
+    print(f"Loaded {len(samples)} samples")
 
-    # 检查图像
-    for s in samples:
-        img_path = s["image"]
-        if not os.path.isabs(img_path):
-            base = os.path.dirname(os.path.dirname(args.data_path))
-            img_path = os.path.join(base, "bitmaps", os.path.basename(img_path))
-        try:
-            img = Image.open(img_path).convert("RGB")
-            print(f"  Image {s['id']}: {img.size} OK")
-        except Exception as e:
-            print(f"  Image {s['id']}: FAILED ({e})")
+    image_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+    print(f"<|image_pad|> token ID: {image_token_id}")
 
-    # 测试 tokenization (不含图像)
-    full_example = samples[0]["conversations"][1]["value"]
-    tokens = processor.tokenizer.encode(full_example)
-    print(f"  Instruction tokens: {len(tokens)}")
+    user_prompt = "Convert this architectural floor plan to SVG format."
 
-    # 测试带图像的 tokenization
-    user_text = "Convert this architectural floor plan to SVG format."
-    img = Image.open(img_path).convert("RGB")
-    inputs = processor(
-        text=user_text,
-        images=img,
-        return_tensors="pt",
-        truncation=True,
-        max_length=4096,
-    )
-    print(f"  Model input: { {k: v.shape for k, v in inputs.items()} }")
-    print("✅ Dry run passed! Data pipeline is correct.")
+    for i, sample in enumerate(samples):
+        img = load_image(sample)
+        print(f"\nSample {i}: {sample['id']} — image size: {img.size}")
+
+        result = process_sample(sample, processor, user_prompt)
+        print(f"  input_ids:  {result['input_ids'].shape}")
+        print(f"  labels:     {result['labels'].shape}")
+        print(f"  pixel_vals: {result['pixel_values'].shape}")
+        print(f"  grid_thw:   {result['image_grid_thw'].shape}")
+
+        # 验证 image token 数量
+        n_img_tokens = (result["input_ids"] == image_token_id).sum().item()
+        t, h, w = result["image_grid_thw"][0].tolist()
+        expected = int(t * h * w)
+        print(f"  image_tokens: {n_img_tokens} (expected {expected}) {'✅' if n_img_tokens == expected else '❌'}")
+
+    print("\n✅ Dry run complete!")
 
 
-# ---------- 入口 ----------
+# ── Entry ──────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="SFT training for RL Vectorizer")
     parser.add_argument("--data-path", default="data/resplan/sft_train.jsonl")
-    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-3B-Instruct",
-                        help="用 3B 而非 8B（CPU 友好）")
-    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-3B-Instruct")
+    parser.add_argument("--batch-size", type=int, default=1)  # batch_size > 1 需要额外实现
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--dry-run", action="store_true", help="只测试数据处理，不加载模型")
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--lora-rank", type=int, default=16)
-    parser.add_argument("--lora-alpha", type=int, default=32)
-    parser.add_argument("--quantization", default=None, choices=["4bit", "8bit", None])
-    parser.add_argument("--max-samples", type=int, default=None,
-                        help="限制训练样本数（用于调试）")
+    parser.add_argument("--lora-rank", type=int, default=32)
+    parser.add_argument("--lora-alpha", type=int, default=64)
+    parser.add_argument("--quantization", default="4bit", choices=["4bit", "8bit", None])
+    parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--save-dir", default="checkpoints/sft")
     parser.add_argument("--log-interval", type=int, default=10)
-    parser.add_argument("--cpu", action="store_true", help="强制 CPU 训练")
+    parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
+
+    if args.cpu:
+        args.quantization = None
 
     train(args)
 

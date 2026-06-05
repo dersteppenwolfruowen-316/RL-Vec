@@ -127,10 +127,14 @@ def train(args):
         return
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # A100 (sm_80+) 原生支持 bf16；T4 (sm_75) 用 fp16
-    cap = torch.cuda.get_device_capability()
-    dtype = torch.bfloat16 if cap >= (8, 0) else torch.float16
-    print(f"Device: {device} (sm_{cap[0]}.{cap[1]}), dtype: {dtype}")
+    if device == "cuda":
+        cap = torch.cuda.get_device_capability()
+        dtype = torch.bfloat16 if cap >= (8, 0) else torch.float16
+        print(f"Device: {device} (sm_{cap[0]}.{cap[1]}), dtype: {dtype}")
+    else:
+        cap = (0, 0)
+        dtype = torch.float32
+        print(f"Device: {device} (CPU mode, float32)")
 
     # ── Load model ──────────────────────────────────
     from transformers import (

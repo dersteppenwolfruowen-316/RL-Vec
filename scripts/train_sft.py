@@ -250,6 +250,10 @@ def train(args):
             del batch, model_kwargs, outputs, loss
             gc.collect()
 
+            # 每 50 步整理一次碎片（A100 分配器需要）
+            if (i + 1) % 50 == 0:
+                torch.cuda.empty_cache()
+
         # epoch 结束时清理一次显存
         gc.collect()
         torch.cuda.empty_cache()

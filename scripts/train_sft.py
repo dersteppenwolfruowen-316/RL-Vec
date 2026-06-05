@@ -132,9 +132,6 @@ def train(args):
     dtype = torch.bfloat16 if cap >= (8, 0) else torch.float16
     print(f"Device: {device} (sm_{cap[0]}.{cap[1]}), dtype: {dtype}")
 
-    # 限制 PyTorch 使用 95% 显存
-    torch.cuda.set_per_process_memory_fraction(0.95)
-
     # ── Load model ──────────────────────────────────
     from transformers import (
         Qwen2_5_VLForConditionalGeneration,
@@ -236,7 +233,7 @@ def train(args):
 
             torch.nn.utils.clip_grad_norm_(trainable, 1.0)
             optimizer.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)  # 用 set_to_none 比默认更快释放内存
 
             global_step += 1
             total_loss += loss.item()
@@ -245,11 +242,13 @@ def train(args):
             if (i + 1) % args.log_interval == 0:
                 print(f"  Step {i + 1}/{len(samples)}  loss={loss.item():.4f}  avg={total_loss / (i + 1):.4f}")
 
-            # 手动清理显存（gc + cuda 双管齐下）
+            # 清理：只 gc 不 empty_cache（避免碎片化）
             del batch, model_kwargs, outputs, loss
             gc.collect()
-            torch.cuda.empty_cache()
 
+        # epoch 结束时清理一次显存
+        gc.collect()
+        torch.cuda.empty_cache()
         avg_loss = total_loss / len(samples)
         print(f"Epoch {epoch + 1} done — Avg loss: {avg_loss:.4f}")
 

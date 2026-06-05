@@ -20,7 +20,7 @@ from PIL import Image
 from tqdm import tqdm
 
 # ── Environment tweaks ─────────────────────────────
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 

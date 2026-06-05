@@ -20,7 +20,7 @@ from PIL import Image
 from tqdm import tqdm
 
 # ── Environment tweaks ─────────────────────────────
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -36,14 +36,14 @@ def load_samples(jsonl_path: str, max_samples: int = None) -> list:
 
 
 def load_image(sample: dict, data_root: str = "data/resplan") -> Image.Image:
-    """加载图像并缩放到 224x224 降低显存。"""
+    """加载图像并缩放到 112x112 极低显存模式。"""
     img_path = sample["image"]
     if not os.path.isabs(img_path):
         img_path = os.path.join(data_root, "bitmaps", os.path.basename(img_path))
     try:
-        return Image.open(img_path).convert("RGB").resize((224, 224))
+        return Image.open(img_path).convert("RGB").resize((112, 112))
     except Exception:
-        return Image.new("RGB", (224, 224), "white")
+        return Image.new("RGB", (112, 112), "white")
 
 
 def process_sample(sample: dict, processor, user_prompt: str):
@@ -56,8 +56,8 @@ def process_sample(sample: dict, processor, user_prompt: str):
     asst_text = sample["conversations"][1]["value"]
 
     # 1) 提取图像特征和 grid 信息
-    # 传入 min_pixels 防止 224px 图像被强制放大（默认 min_pixels=262144 会放大到 ~512px）
-    image_inputs = processor.image_processor([img], return_tensors="pt", min_pixels=224*224)
+    # 传入 min_pixels 防止被强制放大（112x112=12544 像素）
+    image_inputs = processor.image_processor([img], return_tensors="pt", min_pixels=112*112)
     pixel_values = image_inputs["pixel_values"]  # [1, C, H, W]
     image_grid_thw = image_inputs["image_grid_thw"]  # [1, 3]
 
@@ -172,8 +172,10 @@ def train(args):
     model.train()
     model.config.use_cache = False
     model.enable_input_require_grads()
-    model.gradient_checkpointing_enable()
-    print("Gradient checkpointing enabled")
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": True}
+    )
+    print("Gradient checkpointing enabled (use_reentrant=True)")
 
     # freeze vision encoder（省 ~4GB 显存）
     vision = model.base_model.model.model.visual
@@ -231,8 +233,9 @@ def train(args):
             if (i + 1) % args.log_interval == 0:
                 print(f"  Step {i + 1}/{len(samples)}  loss={loss.item():.4f}  avg={total_loss / (i + 1):.4f}")
 
-            # 手动清理显存
+            # 手动清理显存（gc + cuda 双管齐下）
             del batch, model_kwargs, outputs, loss
+            gc.collect()
             torch.cuda.empty_cache()
 
         avg_loss = total_loss / len(samples)

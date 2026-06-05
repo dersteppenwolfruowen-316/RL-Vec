@@ -63,7 +63,10 @@ def process_sample(sample: dict, processor, user_prompt: str):
 
     # 2) 计算 patch 数
     t, h, w = image_grid_thw[0].tolist()
-    num_patches = int(t * h * w)
+    # Qwen2.5-VL 的 vision encoder 有 2x2 patch merge，
+    # image_grid_thw 给的是 merge 前的，需要除以 spatial_merge_size
+    merge_size = 2  # Qwen2.5-VL-3B 默认
+    num_patches = int(t * (h // merge_size) * (w // merge_size))
     image_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
     if image_token_id is None:
         # fallback: 从 added_tokens_encoder 找
@@ -277,7 +280,8 @@ def _dry_run(args):
         # 验证 image token 数量
         n_img_tokens = (result["input_ids"] == image_token_id).sum().item()
         t, h, w = result["image_grid_thw"][0].tolist()
-        expected = int(t * h * w)
+        merge_size = 2
+        expected = int(t * (h // merge_size) * (w // merge_size))
         print(f"  image_tokens: {n_img_tokens} (expected {expected}) {'✅' if n_img_tokens == expected else '❌'}")
 
     print("\n✅ Dry run complete!")

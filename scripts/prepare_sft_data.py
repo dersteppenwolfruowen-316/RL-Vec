@@ -1,18 +1,7 @@
 """ResPlan -> SFT 中间指令训练数据转换器
 
-将 ResPlan 的 SVG + 元数据转换为结构化的中间指令格式（方案 A），
-用于 VLM 的 SFT 阶段训练。
-
-输出格式 (JSONL):
-  {
-    "id": "resplan_00013",
-    "image": "bitmaps/resplan_00013.png",
-    "conversations": [
-      {"from": "user",  "value": "<image>\nConvert this architectural floor plan to SVG format."},
-      {"from": "assistant", "value": "<analysis>...</analysis>\n<outer_wall>...</outer_wall>\n...\n<svg>...</svg>"}
-    ],
-    "metadata": { ... }
-  }
+输出 JSONL 格式:
+  {"id": str, "image": str, "conversations": [{"from": "user", "value": ...}, {"from": "assistant", "value": ...}], "metadata": dict}
 """
 import sys, os, json, re
 from pathlib import Path

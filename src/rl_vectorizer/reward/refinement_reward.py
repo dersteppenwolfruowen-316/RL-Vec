@@ -1,13 +1,4 @@
-"""DiffRasterizer Refinement Reward — 可微优化增量奖励。
-
-核心思想：
-  如果 VLM 生成的 SVG 质量好（坐标接近正确），
-  DiffRasterizer 优化后质量提升量大。
-  如果 VLM 生成的 SVG 很差（完全不对），
-  DiffRasterizer 也救不回来，提升量小。
-
-所以 reward = improve = 优化前的 L2 loss - 优化后的 L2 loss
-"""
+"""DiffRasterizer Refinement Reward — 优化前后 loss 差值为奖励。"""
 from typing import Optional
 import torch
 import numpy as np

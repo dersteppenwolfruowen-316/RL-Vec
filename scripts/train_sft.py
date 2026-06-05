@@ -160,6 +160,8 @@ def train(args):
         device_map="auto",
         **quant_kwargs,
     )
+    # 在 PEFT 包装前关掉 cache（否则 KV cache + 4bit 反量化会吃满显存）
+    model.config.use_cache = False
     processor = AutoProcessor.from_pretrained(args.model_name, use_fast=False)
 
     # LoRA
@@ -175,11 +177,9 @@ def train(args):
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
     model.train()
-    model.config.use_cache = False
     model.enable_input_require_grads()
-    # A100 40GB 足够，关掉 gradient checkpointing 避免内存泄漏
-    # model.gradient_checkpointing_enable()
-    print("Gradient checkpointing disabled (A100 has enough memory)")
+    model.gradient_checkpointing_enable()
+    print(f"Training ready: use_cache={model.config.use_cache}, checkpointing=enabled")
 
     # freeze vision encoder（省 ~4GB 显存）
     vision = model.base_model.model.model.visual

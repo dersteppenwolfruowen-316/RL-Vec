@@ -127,7 +127,8 @@ def train(args):
         return
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    # T4 不支持 bf16 原生（会通过 fp32 模拟，翻倍显存），强制 fp16
+    dtype = torch.float16
     print(f"Device: {device}, dtype: {dtype}")
 
     # ── Load model ──────────────────────────────────

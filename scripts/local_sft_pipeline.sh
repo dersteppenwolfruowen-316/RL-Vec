@@ -14,7 +14,6 @@ echo "  RL Vectorizer — Local SFT Pipeline"
 echo "═══════════════════════════════════════════════════"
 echo ""
 
-# ── Step 0: 检查数据 ──────────────────────────────
 echo "[0/4] Checking data..."
 
 if [ ! -f "data/resplan/ResPlan.pkl" ]; then
@@ -27,7 +26,6 @@ if [ ! -f "data/resplan/ResPlan.pkl" ]; then
 fi
 echo "  OK ResPlan.pkl exists"
 
-# ── Step 1: 转换为 SVG + PNG ──────────────────────
 echo ""
 echo "[1/4] Converting ResPlan → SVG + PNG..."
 if [ ! -d "data/resplan/svgs" ] || [ ! -d "data/resplan/bitmaps" ]; then
@@ -37,7 +35,6 @@ else
     echo "  OK Already exists, skipping"
 fi
 
-# ── Step 2: 准备极小 SFT 数据 ──────────────────────
 echo ""
 echo "[2/4] Preparing mini SFT dataset (25 samples)..."
 if [ ! -f "data/resplan/sft_train.jsonl" ]; then
@@ -51,7 +48,6 @@ tail -5 data/resplan/sft_train.jsonl > data/resplan/mini/test.jsonl
 echo "  OK Train: $(wc -l < data/resplan/mini/train.jsonl) samples"
 echo "  OK Test:  $(wc -l < data/resplan/mini/test.jsonl) samples"
 
-# ── Step 3: SFT 训练（4bit + CPU 友好）───────────
 echo ""
 echo "[3/4] SFT training..."
 echo "  Model: Qwen2.5-VL-3B-Instruct (4bit)"
@@ -74,7 +70,6 @@ python scripts/train_sft.py \
 echo ""
 echo "  OK SFT training complete"
 
-# ── Step 4: 评估（如果 GPU 可用）──────────────────
 echo ""
 echo "[4/4] Evaluation..."
 echo "  Note: 本地 CPU 评估较慢，仅在 GPU 可用时运行"

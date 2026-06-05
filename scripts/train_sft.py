@@ -19,12 +19,10 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-# ── Environment tweaks ─────────────────────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-# ── Data ────────────────────────────────────────────
 def load_samples(jsonl_path: str, max_samples: int = None) -> list:
     samples = []
     with open(jsonl_path) as f:
@@ -120,7 +118,6 @@ def process_sample(sample: dict, processor, user_prompt: str):
     }
 
 
-# ── Training ────────────────────────────────────────
 def train(args):
     if args.dry_run:
         _dry_run(args)
@@ -136,7 +133,6 @@ def train(args):
         dtype = torch.float32
         print(f"Device: {device} (CPU mode, float32)")
 
-    # ── Load model ──────────────────────────────────
     from transformers import (
         Qwen2_5_VLForConditionalGeneration,
         AutoProcessor,
@@ -196,14 +192,12 @@ def train(args):
         p.requires_grad = False
     print("Vision encoder frozen")
 
-    # ── Load data ───────────────────────────────────
     samples = load_samples(args.data_path, args.max_samples)
     print(f"Dataset: {len(samples)} samples")
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     print(f"Trainable params: {sum(p.numel() for p in trainable)}")
 
-    # ── Optimizer ──────────────────────────────────
     try:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(trainable, lr=args.lr, weight_decay=0.01)
@@ -211,7 +205,6 @@ def train(args):
     except ImportError:
         optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
 
-    # ── Train loop ─────────────────────────────────
     user_prompt = "Convert this architectural floor plan to SVG format. First analyze its structure, then generate the SVG step by step."
     global_step = 0
 
@@ -277,7 +270,6 @@ def train(args):
         print(f"Final model saved to {path}")
 
 
-# ── Dry run ────────────────────────────────────────
 def _dry_run(args):
     """在不加载模型的情况下验证数据处理流水线。"""
     from transformers import AutoProcessor
@@ -313,7 +305,6 @@ def _dry_run(args):
     print("\nOK  Dry run complete!")
 
 
-# ── Entry ──────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="SFT training for RL Vectorizer")
     parser.add_argument("--data-path", default="data/resplan/sft_train.jsonl")

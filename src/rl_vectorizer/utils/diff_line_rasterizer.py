@@ -22,7 +22,7 @@ class DifferentiableLineRasterizer(torch.nn.Module):
         img = rasterizer(lines)                    # [H, W, 3] 渲染图
 
         loss = ((img - target) ** 2).mean()
-        loss.backward()                            # → 梯度传到 lines
+        loss.backward()                            # -> 梯度传到 lines
     """
 
     def __init__(
@@ -70,7 +70,7 @@ class DifferentiableLineRasterizer(torch.nn.Module):
         N = lines.shape[0]
         device = lines.device
 
-        # 像素网格 [H, W, 2] → [H, W, 1, 2]
+        # 像素网格 [H, W, 2] -> [H, W, 1, 2]
         pixels = self.grid.to(device).unsqueeze(2)  # [H, W, 1, 2]
 
         # 线段参数

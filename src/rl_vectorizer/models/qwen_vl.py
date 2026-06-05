@@ -89,15 +89,15 @@ class QwenVLModel:
                 try:
                     load_kwargs["attn_implementation"] = "flash_attention_2"
                     self.flash_attention_available = True
-                    print("✓ Using Flash Attention 2")
+                    print("Using Flash Attention 2")
                 except Exception as e:
                     if require_flash_attention:
                         raise RuntimeError(f"Flash Attention 2 is required but failed to load: {e}")
-                    print(f"⚠ Flash Attention 2 not available: {e}")
+                    print(f"Flash Attention 2 not available: {e}")
             else:
                 if require_flash_attention:
                     raise RuntimeError("Flash Attention 2 is required but not supported on this device")
-                print("⚠ Flash Attention 2 not supported, using default attention")
+                print("Flash Attention 2 not supported, using default attention")
 
         if quantization == "4bit":
             from transformers import BitsAndBytesConfig
@@ -107,11 +107,11 @@ class QwenVLModel:
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4",
             )
-            print("✓ Using 4-bit quantization")
+            print("Using 4-bit quantization")
         elif quantization == "8bit":
             from transformers import BitsAndBytesConfig
             load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-            print("✓ Using 8-bit quantization")
+            print("Using 8-bit quantization")
 
         self.model = _resolve_vlm_class(base_model_name).from_pretrained(
             base_model_name,

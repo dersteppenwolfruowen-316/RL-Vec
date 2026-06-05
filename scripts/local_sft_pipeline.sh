@@ -18,23 +18,23 @@ echo ""
 echo "[0/4] Checking data..."
 
 if [ ! -f "data/resplan/ResPlan.pkl" ]; then
-    echo "  ❌ ResPlan.pkl not found at data/resplan/"
+    echo "  X ResPlan.pkl not found at data/resplan/"
     echo "  Run these first (or use Colab):"
     echo "    mkdir -p data/resplan"
     echo "    # Download ResPlan.zip from https://github.com/m-agour/ResPlan/releases"
     echo "    unzip ResPlan.zip -d data/resplan/"
     exit 1
 fi
-echo "  ✓ ResPlan.pkl exists"
+echo "  OK ResPlan.pkl exists"
 
 # ── Step 1: 转换为 SVG + PNG ──────────────────────
 echo ""
 echo "[1/4] Converting ResPlan → SVG + PNG..."
 if [ ! -d "data/resplan/svgs" ] || [ ! -d "data/resplan/bitmaps" ]; then
     python convert_resplan.py
-    echo "  ✓ Done"
+    echo "  OK Done"
 else
-    echo "  ✓ Already exists, skipping"
+    echo "  OK Already exists, skipping"
 fi
 
 # ── Step 2: 准备极小 SFT 数据 ──────────────────────
@@ -48,8 +48,8 @@ fi
 mkdir -p data/resplan/mini
 head -20 data/resplan/sft_train.jsonl > data/resplan/mini/train.jsonl
 tail -5 data/resplan/sft_train.jsonl > data/resplan/mini/test.jsonl
-echo "  ✓ Train: $(wc -l < data/resplan/mini/train.jsonl) samples"
-echo "  ✓ Test:  $(wc -l < data/resplan/mini/test.jsonl) samples"
+echo "  OK Train: $(wc -l < data/resplan/mini/train.jsonl) samples"
+echo "  OK Test:  $(wc -l < data/resplan/mini/test.jsonl) samples"
 
 # ── Step 3: SFT 训练（4bit + CPU 友好）───────────
 echo ""
@@ -72,7 +72,7 @@ python scripts/train_sft.py \
     --log-interval 2
 
 echo ""
-echo "  ✓ SFT training complete"
+echo "  OK SFT training complete"
 
 # ── Step 4: 评估（如果 GPU 可用）──────────────────
 echo ""
@@ -136,7 +136,7 @@ for s in TEST_SAMPLES:
     with torch.no_grad():
         out = model.generate(**inp, max_new_tokens=1024, do_sample=False)
     resp = processor.decode(out[0][inp['input_ids'].shape[1]:], skip_special_tokens=True)
-    valid = '✓' if validate_svg(resp) else '✗'
+    valid = 'OK' if validate_svg(resp) else 'X'
     print(f'    [{valid}] {s[\"id\"]}')
 del model; torch.cuda.empty_cache()
 
@@ -157,11 +157,11 @@ for s in TEST_SAMPLES:
     with torch.no_grad():
         out = model.generate(**inp, max_new_tokens=1024, do_sample=False)
     resp = processor.decode(out[0][inp['input_ids'].shape[1]:], skip_special_tokens=True)
-    valid = '✓' if validate_svg(resp) else '✗'
+    valid = 'OK' if validate_svg(resp) else 'X'
     print(f'    [{valid}] {s[\"id\"]}')
 " 2>&1
 else
-    echo "  ⚠ No GPU available, skipping evaluation."
+    echo "  WARN No GPU available, skipping evaluation."
     echo "  Evaluation available in Colab notebook after SFT training."
 fi
 

@@ -308,9 +308,9 @@ def _dry_run(args):
         t, h, w = result["image_grid_thw"][0].tolist()
         merge_size = 2
         expected = int(t * (h // merge_size) * (w // merge_size))
-        print(f"  image_tokens: {n_img_tokens} (expected {expected}) {'✅' if n_img_tokens == expected else '❌'}")
+        print(f"  image_tokens: {n_img_tokens} (expected {expected}) {'OK ' if n_img_tokens == expected else 'FAIL '}")
 
-    print("\n✅ Dry run complete!")
+    print("\nOK  Dry run complete!")
 
 
 # ── Entry ──────────────────────────────────────────

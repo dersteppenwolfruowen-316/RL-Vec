@@ -78,11 +78,11 @@ class ComplexityReward(BaseReward):
         relative_error = abs(line_count - target) / target
 
         if relative_error <= 0.1:
-            score = 1.0 - relative_error * 2.5          # 1.0 → 0.75
+            score = 1.0 - relative_error * 2.5        
         elif relative_error <= 0.5:
-            score = 0.75 - (relative_error - 0.1) * 0.625  # 0.75 → 0.5
+            score = 0.75 - (relative_error - 0.1) * 0.625
         else:
-            score = max(0.0, 0.5 - (relative_error - 0.5) * 0.5)  # 0.5 → 0.0
+            score = max(0.0, 0.5 - (relative_error - 0.5) * 0.5)
 
         return float(score)
 

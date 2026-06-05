@@ -1,4 +1,4 @@
-"""ResPlan → SFT 中间指令训练数据转换器
+"""ResPlan -> SFT 中间指令训练数据转换器
 
 将 ResPlan 的 SVG + 元数据转换为结构化的中间指令格式（方案 A），
 用于 VLM 的 SFT 阶段训练。
@@ -20,7 +20,7 @@ from lxml import etree
 from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 
-# 颜色 → 语义映射
+# 颜色 -> 语义映射
 STROKE_LABELS = {
     "#333333": "wall",
     "#8B4513": "door",
@@ -244,7 +244,7 @@ def format_polygon(poly: Polygon) -> str:
     simplified = coords[::step]
     if simplified[0] != simplified[-1]:
         simplified.append(simplified[0])
-    return " → ".join(f"({int(x)},{int(y)})" for x, y in simplified)
+    return " -> ".join(f"({int(x)},{int(y)})" for x, y in simplified)
 
 
 def format_line_segments(poly: Polygon, element_type: str) -> str:
@@ -260,10 +260,10 @@ def format_line_segments(poly: Polygon, element_type: str) -> str:
         for i in range(len(simplified) - 1):
             x1, y1 = simplified[i]
             x2, y2 = simplified[i + 1]
-            lines.append(f"line ({int(x1)},{int(y1)}) → ({int(x2)},{int(y2)})")
+            lines.append(f"line ({int(x1)},{int(y1)}) -> ({int(x2)},{int(y2)})")
         return "; ".join(lines)
     else:
-        pts = " → ".join(f"({int(x)},{int(y)})" for x, y in simplified)
+        pts = " -> ".join(f"({int(x)},{int(y)})" for x, y in simplified)
         return f"polygon {pts}"
 
 
@@ -428,9 +428,9 @@ def main():
                 if count % 2000 == 0:
                     print(f"  {count}/{len(svg_files)}")
             except Exception as e:
-                print(f"  ✗ {svg_path.name}: {e}")
+                print(f"  X {svg_path.name}: {e}")
 
-    print(f"\nDone! {count} samples → {output_path}")
+    print(f"\nDone! {count} samples -> {output_path}")
 
     # 打印一个样例
     if count > 0:

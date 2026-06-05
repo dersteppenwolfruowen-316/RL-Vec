@@ -127,9 +127,13 @@ def train(args):
         return
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # T4 不支持 bf16 原生（会通过 fp32 模拟，翻倍显存），强制 fp16
-    dtype = torch.float16
-    print(f"Device: {device}, dtype: {dtype}")
+    # A100 (sm_80+) 原生支持 bf16；T4 (sm_75) 用 fp16
+    cap = torch.cuda.get_device_capability()
+    dtype = torch.bfloat16 if cap >= (8, 0) else torch.float16
+    print(f"Device: {device} (sm_{cap[0]}.{cap[1]}), dtype: {dtype}")
+
+    # 限制 PyTorch 使用 90% 显存，留余量给 CUDA 内部使用
+    torch.cuda.set_per_process_memory_fraction(0.90)
 
     # ── Load model ──────────────────────────────────
     from transformers import (
@@ -173,10 +177,8 @@ def train(args):
     model.train()
     model.config.use_cache = False
     model.enable_input_require_grads()
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": True}
-    )
-    print("Gradient checkpointing enabled (use_reentrant=True)")
+    model.gradient_checkpointing_enable()
+    print("Gradient checkpointing enabled")
 
     # freeze vision encoder（省 ~4GB 显存）
     vision = model.base_model.model.model.visual

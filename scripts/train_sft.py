@@ -132,8 +132,8 @@ def train(args):
     dtype = torch.bfloat16 if cap >= (8, 0) else torch.float16
     print(f"Device: {device} (sm_{cap[0]}.{cap[1]}), dtype: {dtype}")
 
-    # 限制 PyTorch 使用 90% 显存，留余量给 CUDA 内部使用
-    torch.cuda.set_per_process_memory_fraction(0.90)
+    # 限制 PyTorch 使用 95% 显存
+    torch.cuda.set_per_process_memory_fraction(0.95)
 
     # ── Load model ──────────────────────────────────
     from transformers import (
@@ -177,8 +177,9 @@ def train(args):
     model.train()
     model.config.use_cache = False
     model.enable_input_require_grads()
-    model.gradient_checkpointing_enable()
-    print("Gradient checkpointing enabled")
+    # A100 40GB 足够，关掉 gradient checkpointing 避免内存泄漏
+    # model.gradient_checkpointing_enable()
+    print("Gradient checkpointing disabled (A100 has enough memory)")
 
     # freeze vision encoder（省 ~4GB 显存）
     vision = model.base_model.model.model.visual

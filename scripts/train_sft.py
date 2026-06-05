@@ -165,7 +165,7 @@ def train(args):
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model_name,
         torch_dtype=dtype,
-        device_map="auto",
+        device_map="cuda:0",  # 显式指定，避免 accelerate 分配问题
         **quant_kwargs,
     )
     # 在 PEFT 包装前关掉 cache（否则 KV cache + 4bit 反量化会吃满显存）

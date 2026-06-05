@@ -186,6 +186,11 @@ def main():
     os.makedirs(png_dir, exist_ok=True)
 
     print("Loading ResPlan.pkl ...")
+    if not os.path.exists(pkl_path):
+        print(f"❌ {pkl_path} not found!")
+        print("Please download ResPlan.zip from https://github.com/m-agour/ResPlan/releases/tag/1.0.0")
+        print("Then: unzip ResPlan.zip -d data/resplan/")
+        sys.exit(1)
     with open(pkl_path, "rb") as f:
         data = pickle.load(f)
 

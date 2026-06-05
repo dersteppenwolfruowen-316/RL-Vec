@@ -433,11 +433,12 @@ def main():
     print(f"\nDone! {count} samples → {output_path}")
 
     # 打印一个样例
-    print("\n=== Sample ===")
-    sample = json.loads(open(output_path).readline())
-    print(f"ID: {sample['id']}")
-    print(f"Instruction (first 500 chars):")
-    print(sample["conversations"][1]["value"][:500])
+    if count > 0:
+        print("\n=== Sample ===")
+        sample = json.loads(open(output_path).readline())
+        print(f"ID: {sample['id']}")
+        print(f"Instruction (first 500 chars):")
+        print(sample["conversations"][1]["value"][:500])
 
 
 if __name__ == "__main__":

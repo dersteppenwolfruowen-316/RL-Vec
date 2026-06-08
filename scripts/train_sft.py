@@ -54,8 +54,12 @@ def process_sample(sample: dict, processor, user_prompt: str):
     asst_text = sample["conversations"][1]["value"]
 
     # 1) 提取图像特征和 grid 信息
-    # 传入 min_pixels 防止被强制放大（112x112=12544 像素）
-    image_inputs = processor.image_processor([img], return_tensors="pt", min_pixels=112*112)
+    # 传入 min_pixels / max_pixels 防止被强制放大
+    image_inputs = processor.image_processor(
+        [img], return_tensors="pt",
+        min_pixels=112 * 112,
+        max_pixels=112 * 112 * 2,  # 严格控制上界，避免 OOM
+    )
     pixel_values = image_inputs["pixel_values"]  # [1, C, H, W]
     image_grid_thw = image_inputs["image_grid_thw"]  # [1, 3]
 
@@ -159,13 +163,22 @@ def train(args):
         quant_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
         print("Using 8bit quantization")
 
+    # 检测 flash attention 是否可用
+    try:
+        import flash_attn  # noqa: F401
+        attn_impl = "flash_attention_2"
+        print("Using Flash Attention 2 — 加速 ~5x，省显存")
+    except ImportError:
+        attn_impl = "eager"
+        print("Flash Attention 2 未安装，使用标准注意力。`pip install flash-attn --no-build-isolation`")
+
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model_name,
         torch_dtype=dtype,
-        device_map="cuda:0",  # 显式指定，避免 accelerate 分配问题
+        device_map="cuda:0",
+        attn_implementation=attn_impl,
         **quant_kwargs,
     )
-    # 在 PEFT 包装前关掉 cache（否则 KV cache + 4bit 反量化会吃满显存）
     model.config.use_cache = False
     processor = AutoProcessor.from_pretrained(args.model_name, use_fast=False)
 
@@ -215,47 +228,62 @@ def train(args):
         processed_samples.append(process_sample(sample, processor, user_prompt))
     print(f"Pre-processed {len(processed_samples)} samples")
 
+    # 梯度累积配置
+    accum_steps = getattr(args, 'grad_accum_steps', 1)
+    effective_bs = args.batch_size * accum_steps
+    print(f"Train config: batch_size={args.batch_size}, grad_accum={accum_steps}, effective_batch={effective_bs}")
+
+    # 预处理后释放不需要的 cache
+    torch.cuda.empty_cache()
+
     for epoch in range(args.epochs):
         total_loss = 0.0
         pbar = tqdm(processed_samples, desc=f"Epoch {epoch + 1}/{args.epochs}")
 
         for i, batch in enumerate(pbar):
-            # 放到设备
+            # 放到设备（non_blocking 加速）
             model_kwargs = {}
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
-                    model_kwargs[k] = v.to(model.device)
+                    model_kwargs[k] = v.to(model.device, non_blocking=True)
                 else:
                     model_kwargs[k] = v
 
             outputs = model(**model_kwargs)
-            loss = outputs.loss
+            raw_loss = outputs.loss
+
+            # 梯度累积：除以 accum_steps 让梯度平均
+            loss = raw_loss / accum_steps
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)  # 用 set_to_none 比默认更快释放内存
+            total_loss += raw_loss.item()
 
-            global_step += 1
-            total_loss += loss.item()
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            # 每 accum_steps 步（或最后一步）更新参数
+            if (i + 1) % accum_steps == 0 or (i + 1) == len(processed_samples):
+                torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+
+            pbar.set_postfix({"loss": f"{raw_loss.item():.4f}"})
 
             if (i + 1) % args.log_interval == 0:
-                print(f"  Step {i + 1}/{len(samples)}  loss={loss.item():.4f}  avg={total_loss / (i + 1):.4f}")
+                avg_sofar = total_loss / (i + 1)
+                print(f"  Step {i + 1}/{len(samples)}  loss={raw_loss.item():.4f}  avg={avg_sofar:.4f}  global_step={global_step}")
 
-            # 清理：只 gc 不 empty_cache（避免碎片化）
-            del batch, model_kwargs, outputs, loss
+            # 清理
+            del batch, model_kwargs, outputs, loss, raw_loss
             gc.collect()
 
-            # 每 50 步整理一次碎片（A100 分配器需要）
+            # 每 50 步整理一次碎片
             if (i + 1) % 50 == 0:
                 torch.cuda.empty_cache()
 
-        # epoch 结束时清理一次显存
+        # epoch 结束时清理
         gc.collect()
         torch.cuda.empty_cache()
         avg_loss = total_loss / len(samples)
-        print(f"Epoch {epoch + 1} done — Avg loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch + 1} done — Avg loss: {avg_loss:.4f}  global_steps: {global_step}")
 
         if args.save_dir:
             path = os.path.join(args.save_dir, f"epoch_{epoch + 1}")
@@ -310,6 +338,8 @@ def main():
     parser.add_argument("--data-path", default="data/resplan/sft_train.jsonl")
     parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--batch-size", type=int, default=1)  # batch_size > 1 需要额外实现
+    parser.add_argument("--grad-accum-steps", type=int, default=8,
+                        help="梯度累积步数。effective_batch = batch_size * grad_accum_steps")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--epochs", type=int, default=3)

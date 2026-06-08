@@ -195,13 +195,15 @@ def train(args):
     model.train()
     model.enable_input_require_grads()
     model.gradient_checkpointing_enable()
-    print(f"Training ready: use_cache={model.config.use_cache}, checkpointing=enabled")
 
-    # freeze vision encoder（省 ~4GB 显存）
     vision = model.base_model.model.model.visual
     for p in vision.parameters():
         p.requires_grad = False
-    print("Vision encoder frozen")
+    vision_fwd = vision.forward
+    def vision_no_grad(*a, **kw):
+        with torch.no_grad():
+            return vision_fwd(*a, **kw)
+    vision.forward = vision_no_grad
 
     samples = load_samples(args.data_path, args.max_samples)
     print(f"Dataset: {len(samples)} samples")

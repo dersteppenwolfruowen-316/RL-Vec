@@ -334,7 +334,7 @@ def _dry_run(args):
 def main():
     parser = argparse.ArgumentParser(description="SFT training for RL Vectorizer")
     parser.add_argument("--data-path", default="data/resplan/sft_train.jsonl")
-    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-1.5B-Instruct")
+    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum-steps", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)

@@ -473,7 +473,7 @@ def _dry_run(args):
 def main():
     parser = argparse.ArgumentParser(description="Diagnostic: Room Count Prediction")
     parser.add_argument("--data-path", default="data/resplan")
-    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-1.5B-Instruct")
+    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--max-samples", type=int, default=50)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-4)

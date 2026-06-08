@@ -296,7 +296,11 @@ def train(args):
         vision = model.base_model.model.model.visual
         for p in vision.parameters():
             p.requires_grad = False
-        print("Vision encoder frozen")
+        vision_fwd = vision.forward
+        def vision_no_grad(*a, **kw):
+            with torch.no_grad():
+                return vision_fwd(*a, **kw)
+        vision.forward = vision_no_grad
     except Exception:
         pass
 

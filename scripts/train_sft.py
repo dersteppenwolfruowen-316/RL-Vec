@@ -156,8 +156,8 @@ def train(args):
         quant_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
         print("Using 8bit quantization — VRAM saved (~50%)")
 
-    # 选择 attention backend（优先级: sdpa > flash_attn_2 > eager）
-    # SDPA 是 PyTorch 内置的，A100 上用 cuDNN 做 flash attention，无需额外安装
+    if args.quantization == "4bit" and torch.cuda.get_device_properties(0).total_memory < 20e9:
+        print(f"⚠️  GPU memory {torch.cuda.get_device_properties(0).total_memory/1e9:.0f}GB < 20GB, 4bit may OOM. Use --quantization None if needed.")
     if hasattr(torch.backends, "cudnn") and torch.backends.cudnn.enabled:
         try:
             import flash_attn  # noqa: F401 — 可选加速

@@ -145,23 +145,17 @@ def train(args):
     from peft import LoraConfig, get_peft_model, TaskType
 
     quant_kwargs = {}
-    # A100 40GB 足够跑全 bf16，不用 4bit（避免反量化缓存泄漏）
-    # args.quantization 保持为 "4bit" 以便 T4 上使用
-    # 但 A100 上用 4bit 会导致反量化权重在 checkpoint 中持续累积
-    if args.quantization == "4bit" and torch.cuda.get_device_capability() < (8, 0):
+    if args.quantization == "4bit":
         quant_kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=dtype,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
         )
-        print("Using 4bit quantization (T4 mode)")
-    elif args.quantization == "4bit":
-        # A100 上忽略 4bit 请求，全 bf16 更稳定
-        print("A100 detected: using full bf16 instead of 4bit quantization")
+        print(f"Using 4bit quantization — VRAM saved (~70%), compute in {dtype}")
     elif args.quantization == "8bit":
         quant_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-        print("Using 8bit quantization")
+        print("Using 8bit quantization — VRAM saved (~50%)")
 
     # 选择 attention backend（优先级: sdpa > flash_attn_2 > eager）
     # SDPA 是 PyTorch 内置的，A100 上用 cuDNN 做 flash attention，无需额外安装

@@ -142,8 +142,8 @@ def extract_element_count(svg_text: str) -> int:
 
 def load_image(path: str) -> Image.Image:
     if not os.path.exists(path):
-        return Image.new("RGB", (112, 112), "white")
-    return Image.open(path).convert("RGB").resize((112, 112))
+        return Image.new("RGB", (64, 64), "white")
+    return Image.open(path).convert("RGB").resize((64, 64))
 
 
 def process_sample(sample: dict, processor) -> dict:
@@ -153,8 +153,8 @@ def process_sample(sample: dict, processor) -> dict:
 
     image_inputs = processor.image_processor(
         [img], return_tensors="pt",
-        min_pixels=112 * 112,
-        max_pixels=112 * 112 * 2,
+        min_pixels=64 * 64,
+        max_pixels=64 * 64 * 2,
     )
     pixel_values = image_inputs["pixel_values"]
     image_grid_thw = image_inputs["image_grid_thw"]
@@ -434,7 +434,7 @@ def _dry_run(args):
 def main():
     parser = argparse.ArgumentParser(description="Diagnostic: Grid-based SVG Training")
     parser.add_argument("--data-path", default="data/resplan")
-    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-3B-Instruct")
+    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-1.5B-Instruct")
     parser.add_argument("--max-samples", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-4)

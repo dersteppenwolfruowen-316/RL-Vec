@@ -34,14 +34,13 @@ def load_samples(jsonl_path: str, max_samples: int = None) -> list:
 
 
 def load_image(sample: dict, data_root: str = "data/resplan") -> Image.Image:
-    """加载图像并缩放到 112x112 极低显存模式。"""
     img_path = sample["image"]
     if not os.path.isabs(img_path):
         img_path = os.path.join(data_root, "bitmaps", os.path.basename(img_path))
     try:
-        return Image.open(img_path).convert("RGB").resize((112, 112))
+        return Image.open(img_path).convert("RGB").resize((64, 64))
     except Exception:
-        return Image.new("RGB", (112, 112), "white")
+        return Image.new("RGB", (64, 64), "white")
 
 
 def process_sample(sample: dict, processor, user_prompt: str):
@@ -57,8 +56,8 @@ def process_sample(sample: dict, processor, user_prompt: str):
     # 传入 min_pixels / max_pixels 防止被强制放大
     image_inputs = processor.image_processor(
         [img], return_tensors="pt",
-        min_pixels=112 * 112,
-        max_pixels=112 * 112 * 2,  # 严格控制上界，避免 OOM
+        min_pixels=64 * 64,
+        max_pixels=64 * 64 * 2,
     )
     pixel_values = image_inputs["pixel_values"]  # [1, C, H, W]
     image_grid_thw = image_inputs["image_grid_thw"]  # [1, 3]
@@ -335,15 +334,14 @@ def _dry_run(args):
 def main():
     parser = argparse.ArgumentParser(description="SFT training for RL Vectorizer")
     parser.add_argument("--data-path", default="data/resplan/sft_train.jsonl")
-    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-3B-Instruct")
-    parser.add_argument("--batch-size", type=int, default=1)  # batch_size > 1 需要额外实现
-    parser.add_argument("--grad-accum-steps", type=int, default=8,
-                        help="梯度累积步数。effective_batch = batch_size * grad_accum_steps")
+    parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-1.5B-Instruct")
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--grad-accum-steps", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--lora-rank", type=int, default=32)
-    parser.add_argument("--lora-alpha", type=int, default=64)
+    parser.add_argument("--lora-rank", type=int, default=8)
+    parser.add_argument("--lora-alpha", type=int, default=16)
     parser.add_argument("--quantization", default="4bit", choices=["4bit", "8bit", None])
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--save-dir", default="checkpoints/sft")

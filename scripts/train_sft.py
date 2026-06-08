@@ -163,14 +163,19 @@ def train(args):
         quant_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
         print("Using 8bit quantization")
 
-    # 检测 flash attention 是否可用
-    try:
-        import flash_attn  # noqa: F401
-        attn_impl = "flash_attention_2"
-        print("Using Flash Attention 2 — 加速 ~5x，省显存")
-    except ImportError:
+    # 选择 attention backend（优先级: sdpa > flash_attn_2 > eager）
+    # SDPA 是 PyTorch 内置的，A100 上用 cuDNN 做 flash attention，无需额外安装
+    if hasattr(torch.backends, "cudnn") and torch.backends.cudnn.enabled:
+        try:
+            import flash_attn  # noqa: F401 — 可选加速
+            attn_impl = "flash_attention_2"
+            print("Using Flash Attention 2 (已安装)")
+        except ImportError:
+            attn_impl = "sdpa"
+            print("Using PyTorch SDPA (内置，A100 上 ≈ flash-attn 速度)")
+    else:
         attn_impl = "eager"
-        print("Flash Attention 2 未安装，使用标准注意力。`pip install flash-attn --no-build-isolation`")
+        print("Using eager attention")
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model_name,

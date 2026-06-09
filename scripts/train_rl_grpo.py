@@ -450,9 +450,13 @@ def train(args):
             raw_pv = inputs["pixel_values"]
             if isinstance(raw_pv, (list, tuple)):
                 raw_pv = torch.stack(raw_pv)
+            if raw_pv.dim() == 3:
+                raw_pv = raw_pv.unsqueeze(0)
             raw_gt = inputs["image_grid_thw"]
             if isinstance(raw_gt, (list, tuple)):
                 raw_gt = torch.stack(raw_gt)
+            if raw_gt.dim() == 1:
+                raw_gt = raw_gt.unsqueeze(0)
 
             batch_gen_inputs = {
                 "input_ids": inputs["input_ids"].expand(args.rollout_n, -1).contiguous(),

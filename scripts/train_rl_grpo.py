@@ -451,6 +451,10 @@ def train(args):
             if isinstance(raw_pv, (list, tuple)):
                 raw_pv = torch.stack(raw_pv)
             # 确保 4D [B, C, H, W] — 不管 processor 返回什么形状
+            print(f"DEBUG pv type={type(raw_pv).__name__}", end="")
+            if hasattr(raw_pv, 'shape'):
+                print(f" shape={raw_pv.shape} dim={raw_pv.dim()}", end="")
+            print()
             while raw_pv.dim() < 4:
                 raw_pv = raw_pv.unsqueeze(0)
             raw_gt = inputs["image_grid_thw"]

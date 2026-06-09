@@ -12,6 +12,7 @@ from .ensemble import EnsembleReward
 from .geometric_reward import GeometricConstraintReward
 from .adversarial_reward import AdversarialReward, ConsistencyReward
 from .refinement_reward import RefinementReward
+from .diffvg_reward import DiffVGVisualReward, CompositeFloorplanReward
 
 __all__ = [
     "BaseReward",
@@ -26,4 +27,6 @@ __all__ = [
     "AdversarialReward",
     "ConsistencyReward",
     "RefinementReward",
+    "DiffVGVisualReward",
+    "CompositeFloorplanReward",
 ]

@@ -444,27 +444,43 @@ def train(args):
                       for k, v in inputs.items()}
             prompt_len = inputs["input_ids"].shape[1]
 
+            # ── Prepare batch inputs for parallel rollout generation ──
+            # 把 batch 维度展开成 rollout_n，让模型并行生成所有 rollout
+            prompt_len = inputs["input_ids"].shape[1]
+            raw_pv = inputs["pixel_values"]
+            if isinstance(raw_pv, (list, tuple)):
+                raw_pv = torch.stack(raw_pv)
+            raw_gt = inputs["image_grid_thw"]
+            if isinstance(raw_gt, (list, tuple)):
+                raw_gt = torch.stack(raw_gt)
+
+            batch_gen_inputs = {
+                "input_ids": inputs["input_ids"].expand(args.rollout_n, -1).contiguous(),
+                "attention_mask": inputs["attention_mask"].expand(args.rollout_n, -1).contiguous(),
+                "pixel_values": raw_pv.expand(args.rollout_n, -1, -1, -1).contiguous(),
+                "image_grid_thw": raw_gt.expand(args.rollout_n, -1).contiguous(),
+            }
+
             # ── Generate responses (with π_θ) ─────────────────────────
             model.set_adapter("rl")
             with torch.no_grad():
                 outputs = model.generate(
-                    **inputs,
+                    **batch_gen_inputs,
                     max_new_tokens=args.max_svg_tokens,
-                    num_return_sequences=args.rollout_n,
                     do_sample=True,
                     temperature=args.temperature,
                     top_p=0.95,
                     output_scores=True,
                     return_dict_in_generate=True,
+                    use_cache=True,
                 )
 
             # ── Extract and score responses ────────────────────────────
             responses = []
             generated_tokens = []
+            # outputs.sequences: [rollout_n, prompt_len + max_new_tokens]
             for j in range(args.rollout_n):
-                seq = outputs.sequences[j * inputs["input_ids"].shape[0]:
-                                        (j + 1) * inputs["input_ids"].shape[0]]
-                gen_tokens = seq[0][prompt_len:]
+                gen_tokens = outputs.sequences[j, prompt_len:]
                 generated_tokens.append(gen_tokens)
                 resp = processor.decode(gen_tokens, skip_special_tokens=True)
                 responses.append(resp)
@@ -522,26 +538,15 @@ def train(args):
                 for labels in batch_labels
             ])
 
-            # 复用 pixel_values, image_grid_thw (batch 中所有 rollout 共用)
-            # Qwen2.5-VL processor 返回的 pixel_values 是 list[tensor]，需要 stack 成 [1, C, H, W]
-            raw_pv = inputs["pixel_values"]
-            if isinstance(raw_pv, (list, tuple)):
-                raw_pv = torch.stack(raw_pv)
-            batch_pixel_values = raw_pv.expand(args.rollout_n, -1, -1, -1).contiguous()
-
-            raw_gt = inputs["image_grid_thw"]
-            if isinstance(raw_gt, (list, tuple)):
-                raw_gt = torch.stack(raw_gt)
-            batch_grid_thw = raw_gt.expand(args.rollout_n, -1).contiguous()
-
             # ── π_θ log probs (trainable) ─────────────────────────────
+            # 复用上面 generate 时已经 expand 好的 pixel_values / grid_thw
             model.set_adapter("rl")
             model.train()
             outputs_theta = model(
                 input_ids=padded_ids,
                 attention_mask=padded_mask,
-                pixel_values=batch_pixel_values,
-                image_grid_thw=batch_grid_thw,
+                pixel_values=batch_gen_inputs["pixel_values"],
+                image_grid_thw=batch_gen_inputs["image_grid_thw"],
                 labels=padded_labels,
             )
             # 从 logits 提取 response 部分的 log-probs
@@ -559,8 +564,8 @@ def train(args):
                         outputs_ref = model(
                             input_ids=padded_ids,
                             attention_mask=padded_mask,
-                            pixel_values=batch_pixel_values,
-                            image_grid_thw=batch_grid_thw,
+                            pixel_values=batch_gen_inputs["pixel_values"],
+                            image_grid_thw=batch_gen_inputs["image_grid_thw"],
                         )
                     logits_ref = outputs_ref.logits
                     log_probs_ref = _get_response_log_probs(

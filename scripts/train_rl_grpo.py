@@ -465,6 +465,9 @@ def train(args):
             raw_gt = inputs["image_grid_thw"]
             if isinstance(raw_gt, (list, tuple)):
                 raw_gt = torch.stack(raw_gt)
+            # 确保 2D [batch, 3] — 去掉多余前导维度再补
+            while raw_gt.dim() > 2:
+                raw_gt = raw_gt.squeeze(0)
             while raw_gt.dim() < 2:
                 raw_gt = raw_gt.unsqueeze(0)
 
@@ -559,7 +562,7 @@ def train(args):
                 input_ids=padded_ids,
                 attention_mask=padded_mask,
                 pixel_values=batch_pv,
-                image_grid_thw=raw_gt.unsqueeze(0).expand(args.rollout_n, -1).contiguous(),
+                image_grid_thw=raw_gt.expand(args.rollout_n, -1).contiguous(),
                 labels=padded_labels,
             )
             # 从 logits 提取 response 部分的 log-probs
@@ -578,7 +581,7 @@ def train(args):
                             input_ids=padded_ids,
                             attention_mask=padded_mask,
                             pixel_values=batch_pv,
-                            image_grid_thw=raw_gt.unsqueeze(0).expand(args.rollout_n, -1).contiguous(),
+                            image_grid_thw=raw_gt.expand(args.rollout_n, -1).contiguous(),
                         )
                     logits_ref = outputs_ref.logits
                     log_probs_ref = _get_response_log_probs(

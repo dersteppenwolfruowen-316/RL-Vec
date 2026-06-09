@@ -363,8 +363,9 @@ def train(args):
 
     model.train()
     model.enable_input_require_grads()
-    if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
+    # LoRA rank 8 + 4bit 激活内存足够小，不需要 gradient checkpointing
+    if hasattr(model, "gradient_checkpointing_disable"):
+        model.gradient_checkpointing_disable()
 
     # 冻结视觉编码器
     vision = model.base_model.model.model.visual
@@ -471,11 +472,6 @@ def train(args):
             # Qwen2.5-VL + PEFT 下 batch 生成不稳定，逐个 rollout 更可靠
             model.set_adapter("rl")
             model.eval()
-            model.gradient_checkpointing_disable()
-            # 强制启用 KV cache（gradient checkpointing 会禁用 cache）
-            model.config.use_cache = True
-            if hasattr(model, "base_model") and hasattr(model.base_model, "config"):
-                model.base_model.config.use_cache = True
             responses = []
             generated_tokens = []
             with torch.no_grad():
@@ -496,9 +492,7 @@ def train(args):
                     generated_tokens.append(gen_ids)
                     resp = processor.decode(gen_ids, skip_special_tokens=True)
                     responses.append(resp)
-            # 恢复训练模式
             model.train()
-            model.gradient_checkpointing_enable()
 
             svg_codes = [extract_svg(r) for r in responses]
             interm_xmls = [extract_intermediate(r) for r in responses]

@@ -479,11 +479,8 @@ def train(args):
             # ── Generate responses (with π_θ) ─────────────────────────
             model.set_adapter("rl")
             model.eval()
-            # 生成前禁用 gradient checkpointing + KV cache 加速
-            try:
-                model.base_model.model.gradient_checkpointing_disable()
-            except Exception:
-                pass
+            # 生成前禁用 gradient checkpointing + 启用 KV cache 加速
+            model.gradient_checkpointing_disable()
             with torch.no_grad():
                 outputs = model.generate(
                     **batch_gen_inputs,
@@ -497,10 +494,7 @@ def train(args):
                 )
             # 恢复训练模式
             model.train()
-            try:
-                model.base_model.model.gradient_checkpointing_enable()
-            except Exception:
-                pass
+            model.gradient_checkpointing_enable()
 
             # ── Extract and score responses ────────────────────────────
             responses = []

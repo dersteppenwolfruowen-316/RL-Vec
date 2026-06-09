@@ -472,6 +472,10 @@ def train(args):
             model.set_adapter("rl")
             model.eval()
             model.gradient_checkpointing_disable()
+            # 强制启用 KV cache（gradient checkpointing 会禁用 cache）
+            model.config.use_cache = True
+            if hasattr(model, "base_model") and hasattr(model.base_model, "config"):
+                model.base_model.config.use_cache = True
             responses = []
             generated_tokens = []
             with torch.no_grad():

@@ -450,13 +450,18 @@ def train(args):
             raw_pv = inputs["pixel_values"]
             if isinstance(raw_pv, (list, tuple)):
                 raw_pv = torch.stack(raw_pv)
-            # 确保 4D [B, C, H, W] — 不管 processor 返回什么形状
-            print(f"DEBUG pv type={type(raw_pv).__name__}", end="")
-            if hasattr(raw_pv, 'shape'):
-                print(f" shape={raw_pv.shape} dim={raw_pv.dim()}", end="")
-            print()
-            while raw_pv.dim() < 4:
-                raw_pv = raw_pv.unsqueeze(0)
+            # Qwen2.5-VL processor 返回的 pixel_values 有两种格式：
+            # 1) 调用 processor(image, text) 时: [num_patches, hidden_dim] (patch embeddings)
+            # 2) 调用 processor.image_processor() 时: [1, C, H, W] (raw pixels)
+            # 需要根据 dim 数分别处理
+            if raw_pv.dim() == 2:
+                # patch embeddings: [P, D] → 沿 patch 维 repeat
+                batch_pv = raw_pv.repeat(args.rollout_n, 1).contiguous()
+            else:
+                # raw pixels: 确保 4D 后用 expand
+                while raw_pv.dim() < 4:
+                    raw_pv = raw_pv.unsqueeze(0)
+                batch_pv = raw_pv.expand(args.rollout_n, -1, -1, -1).contiguous()
             raw_gt = inputs["image_grid_thw"]
             if isinstance(raw_gt, (list, tuple)):
                 raw_gt = torch.stack(raw_gt)
@@ -467,7 +472,7 @@ def train(args):
             batch_gen_inputs = {
                 "input_ids": inputs["input_ids"].expand(args.rollout_n, -1).contiguous(),
                 "attention_mask": inputs["attention_mask"].expand(args.rollout_n, -1).contiguous(),
-                "pixel_values": raw_pv.expand(args.rollout_n, -1, -1, -1).contiguous(),
+                "pixel_values": batch_pv,
                 "image_grid_thw": raw_gt.expand(args.rollout_n, -1).contiguous(),
             }
 

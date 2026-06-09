@@ -458,53 +458,43 @@ def train(args):
                 # patch embeddings: [P, D] → 沿 patch 维 repeat
                 batch_pv = raw_pv.repeat(args.rollout_n, 1).contiguous()
             else:
-                # raw pixels: 确保 4D 后用 expand
+                # raw pixels: 确保 4D
                 while raw_pv.dim() < 4:
                     raw_pv = raw_pv.unsqueeze(0)
-                batch_pv = raw_pv.expand(args.rollout_n, -1, -1, -1).contiguous()
             raw_gt = inputs["image_grid_thw"]
             if isinstance(raw_gt, (list, tuple)):
                 raw_gt = torch.stack(raw_gt)
-            # 确保 2D [B, 3]
             while raw_gt.dim() < 2:
                 raw_gt = raw_gt.unsqueeze(0)
 
-            batch_gen_inputs = {
-                "input_ids": inputs["input_ids"].expand(args.rollout_n, -1).contiguous(),
-                "attention_mask": inputs["attention_mask"].expand(args.rollout_n, -1).contiguous(),
-                "pixel_values": batch_pv,
-                "image_grid_thw": raw_gt.expand(args.rollout_n, -1).contiguous(),
-            }
-
-            # ── Generate responses (with π_θ) ─────────────────────────
+            # ── Generate responses one by one (sequential rollout) ──
+            # Qwen2.5-VL + PEFT 下 batch 生成不稳定，逐个 rollout 更可靠
             model.set_adapter("rl")
             model.eval()
-            # 生成前禁用 gradient checkpointing + 启用 KV cache 加速
             model.gradient_checkpointing_disable()
+            responses = []
+            generated_tokens = []
             with torch.no_grad():
-                outputs = model.generate(
-                    **batch_gen_inputs,
-                    max_new_tokens=args.max_svg_tokens,
-                    do_sample=True,
-                    temperature=args.temperature,
-                    top_p=0.95,
-                    output_scores=True,
-                    return_dict_in_generate=True,
-                    use_cache=True,
-                )
+                for j in range(args.rollout_n):
+                    out = model.generate(
+                        input_ids=inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        pixel_values=raw_pv if raw_pv.dim() == 2 else raw_pv.unsqueeze(0),
+                        image_grid_thw=raw_gt if raw_gt.dim() == 2 else raw_gt.unsqueeze(0),
+                        max_new_tokens=args.max_svg_tokens,
+                        do_sample=True,
+                        temperature=args.temperature,
+                        top_p=0.95,
+                        output_scores=False,
+                        use_cache=True,
+                    )
+                    gen_ids = out[0][prompt_len:]
+                    generated_tokens.append(gen_ids)
+                    resp = processor.decode(gen_ids, skip_special_tokens=True)
+                    responses.append(resp)
             # 恢复训练模式
             model.train()
             model.gradient_checkpointing_enable()
-
-            # ── Extract and score responses ────────────────────────────
-            responses = []
-            generated_tokens = []
-            # outputs.sequences: [rollout_n, prompt_len + max_new_tokens]
-            for j in range(args.rollout_n):
-                gen_tokens = outputs.sequences[j, prompt_len:]
-                generated_tokens.append(gen_tokens)
-                resp = processor.decode(gen_tokens, skip_special_tokens=True)
-                responses.append(resp)
 
             svg_codes = [extract_svg(r) for r in responses]
             interm_xmls = [extract_intermediate(r) for r in responses]
@@ -560,14 +550,18 @@ def train(args):
             ])
 
             # ── π_θ log probs (trainable) ─────────────────────────────
-            # 复用上面 generate 时已经 expand 好的 pixel_values / grid_thw
+            # rollout 个序列需要各自一份 pixel_values / grid_thw
+            if raw_pv.dim() == 2:
+                batch_pv = raw_pv.repeat(args.rollout_n, 1)
+            else:
+                batch_pv = raw_pv.unsqueeze(0).expand(args.rollout_n, -1, -1, -1)
             model.set_adapter("rl")
             model.train()
             outputs_theta = model(
                 input_ids=padded_ids,
                 attention_mask=padded_mask,
-                pixel_values=batch_gen_inputs["pixel_values"],
-                image_grid_thw=batch_gen_inputs["image_grid_thw"],
+                pixel_values=batch_pv,
+                image_grid_thw=raw_gt.unsqueeze(0).expand(args.rollout_n, -1).contiguous(),
                 labels=padded_labels,
             )
             # 从 logits 提取 response 部分的 log-probs
@@ -585,8 +579,8 @@ def train(args):
                         outputs_ref = model(
                             input_ids=padded_ids,
                             attention_mask=padded_mask,
-                            pixel_values=batch_gen_inputs["pixel_values"],
-                            image_grid_thw=batch_gen_inputs["image_grid_thw"],
+                            pixel_values=batch_pv,
+                            image_grid_thw=raw_gt.unsqueeze(0).expand(args.rollout_n, -1).contiguous(),
                         )
                     logits_ref = outputs_ref.logits
                     log_probs_ref = _get_response_log_probs(

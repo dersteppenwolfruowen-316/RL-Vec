@@ -1,1 +1,15 @@
 *.pyc
+__pycache__/
+.DS_Store
+
+# 训练数据（太大，不提交）
+data/
+
+# Claude Code 配置
+.claude/
+
+# 模型检查点
+checkpoints/
+
+# 生成的评估结果
+eval_results.json

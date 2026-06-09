@@ -236,24 +236,17 @@ def format_polygon(poly: Polygon) -> str:
     return " -> ".join(f"({int(x)},{int(y)})" for x, y in simplified)
 
 
-def format_line_segments(poly: Polygon, element_type: str) -> str:
-    """将多边形分解为线段列表。
-    对于墙体用 line 表示，对于房间用 polygon 表示。
+def format_polygon_coords(poly: Polygon, tolerance: float = 5.0) -> str:
+    """将Shapely Polygon转换为坐标序列字符串。
+    使用 simplify 降采样，保留关键转角点，而非固定步长抽取。
     """
-    coords = list(poly.exterior.coords)
-    step = max(1, len(coords) // 8)
-    simplified = coords[::step]
-
-    if element_type == "wall":
-        lines = []
-        for i in range(len(simplified) - 1):
-            x1, y1 = simplified[i]
-            x2, y2 = simplified[i + 1]
-            lines.append(f"line ({int(x1)},{int(y1)}) -> ({int(x2)},{int(y2)})")
-        return "; ".join(lines)
-    else:
-        pts = " -> ".join(f"({int(x)},{int(y)})" for x, y in simplified)
-        return f"polygon {pts}"
+    simplified = poly.simplify(tolerance=tolerance, preserve_topology=True)
+    coords = list(simplified.exterior.coords)
+    # 移除与起点重复的终点（封闭多边形首尾重复）
+    if len(coords) > 1 and coords[0] == coords[-1]:
+        coords = coords[:-1]
+    coord_str = ",".join(f"({int(x)},{int(y)})" for x, y in coords)
+    return f"polygon={coord_str}"
 
 
 def extract_style_value(style: str, key: str) -> str:
@@ -334,33 +327,32 @@ def process_svg(svg_path: Path, metadata: dict = None) -> dict:
         if wall_polys:
             outer, partitions = classify_walls(wall_polys)
             if outer:
-                parts.append(f"<outer_wall>{format_line_segments(outer, 'wall')}</outer_wall>")
+                parts.append(f"<outer_wall>{format_polygon_coords(outer)}</outer_wall>")
             if partitions:
                 for p in partitions:
-                    parts.append(f"<partition_wall>{format_line_segments(p, 'wall')}</partition_wall>")
+                    parts.append(f"<partition_wall>{format_polygon_coords(p)}</partition_wall>")
 
     # 3. Openings (doors + windows)
     if doors_path:
         door_polys = path_to_polygons(doors_path)
         for dp in door_polys:
-            parts.append(f"<door>{format_line_segments(dp, 'wall')}</door>")
+            parts.append(f"<door>{format_polygon_coords(dp)}</door>")
 
     for fp in front_doors:
         fpolys = path_to_polygons(fp)
         for fdp in fpolys:
-            parts.append(f"<front_door>{format_line_segments(fdp, 'wall')}</front_door>")
+            parts.append(f"<front_door>{format_polygon_coords(fdp)}</front_door>")
 
     if windows_path:
         win_polys = path_to_polygons(windows_path)
         for wp in win_polys:
-            parts.append(f"<window>{format_line_segments(wp, 'wall')}</window>")
+            parts.append(f"<window>{format_polygon_coords(wp)}</window>")
 
-    # 4. Room areas
+    # 4. Room areas（polygon 格式，提供完整几何监督）
     for room_type, polys in room_areas.items():
         for rp in polys:
-            bounds = rp.bounds  # (minx, miny, maxx, maxy)
-            pos = f"center=({int((bounds[0]+bounds[2])/2)},{int((bounds[1]+bounds[3])/2)})"
-            parts.append(f"<{room_type}>{pos}</{room_type}>")
+            coord_str = format_polygon_coords(rp)
+            parts.append(f"<{room_type}>{coord_str}</{room_type}>")
 
     # 5. Final SVG
     parts.append(f"<svg_output>\n{svg_code}\n</svg_output>")

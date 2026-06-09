@@ -523,8 +523,16 @@ def train(args):
             ])
 
             # 复用 pixel_values, image_grid_thw (batch 中所有 rollout 共用)
-            batch_pixel_values = inputs["pixel_values"].expand(args.rollout_n, -1, -1, -1)
-            batch_grid_thw = inputs["image_grid_thw"].expand(args.rollout_n, -1, -1)
+            # Qwen2.5-VL processor 返回的 pixel_values 是 list[tensor]，需要 stack 成 [1, C, H, W]
+            raw_pv = inputs["pixel_values"]
+            if isinstance(raw_pv, (list, tuple)):
+                raw_pv = torch.stack(raw_pv)
+            batch_pixel_values = raw_pv.expand(args.rollout_n, -1, -1, -1).contiguous()
+
+            raw_gt = inputs["image_grid_thw"]
+            if isinstance(raw_gt, (list, tuple)):
+                raw_gt = torch.stack(raw_gt)
+            batch_grid_thw = raw_gt.expand(args.rollout_n, -1).contiguous()
 
             # ── π_θ log probs (trainable) ─────────────────────────────
             model.set_adapter("rl")

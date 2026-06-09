@@ -450,12 +450,14 @@ def train(args):
             raw_pv = inputs["pixel_values"]
             if isinstance(raw_pv, (list, tuple)):
                 raw_pv = torch.stack(raw_pv)
-            if raw_pv.dim() == 3:
+            # 确保 4D [B, C, H, W] — 不管 processor 返回什么形状
+            while raw_pv.dim() < 4:
                 raw_pv = raw_pv.unsqueeze(0)
             raw_gt = inputs["image_grid_thw"]
             if isinstance(raw_gt, (list, tuple)):
                 raw_gt = torch.stack(raw_gt)
-            if raw_gt.dim() == 1:
+            # 确保 2D [B, 3]
+            while raw_gt.dim() < 2:
                 raw_gt = raw_gt.unsqueeze(0)
 
             batch_gen_inputs = {

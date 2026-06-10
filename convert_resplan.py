@@ -1,10 +1,95 @@
 #!/usr/bin/env python3
+"""ResPlan → SVG/PNG 转换器，支持断点续传。"""
 import pickle
 import json
 import os
 import sys
+import signal
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger("convert_resplan")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+
+class TimeoutError(Exception):
+    """渲染超时异常。"""
+    pass
+
+
+def _timeout_handler(signum, frame):
+    raise TimeoutError("rendering timed out")
+
+
+def render_svg_to_png(svg_code, png_path, size=1024, timeout=60):
+    """将 SVG 渲染为 PNG，带超时保护。
+
+    尝试顺序:
+    1. rl_vectorizer.utils.svg_renderer (自定义加速渲染)
+    2. cairosvg (标准渲染)
+    3. PIL 空白图 (最后保底)
+
+    Args:
+        timeout: 单次渲染超时秒数 (默认 60s)
+    """
+    for attempt, renderer in enumerate(["custom", "cairosvg", "pil"]):
+        try:
+            if renderer == "custom":
+                from rl_vectorizer.utils.svg_renderer import render_svg_cairo
+                import cairosvg
+                # 设置超时
+                old = signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(timeout)
+                try:
+                    cairosvg.svg2png(
+                        bytestring=svg_code.encode(),
+                        write_to=png_path,
+                        output_width=size,
+                        output_height=size,
+                    )
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, old)
+                return True
+
+            elif renderer == "cairosvg":
+                import cairosvg
+                old = signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(timeout)
+                try:
+                    cairosvg.svg2png(
+                        bytestring=svg_code.encode(),
+                        write_to=png_path,
+                        output_width=size,
+                        output_height=size,
+                    )
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, old)
+                return True
+
+            else:  # pil — 纯白保底图
+                from PIL import Image
+                img = Image.new("RGB", (size, size), "white")
+                img.save(png_path)
+                return True
+
+        except TimeoutError:
+            log.warning(f"  ⏱ render attempt {attempt + 1} timed out (>={timeout}s)")
+        except ImportError:
+            if attempt == 0:
+                continue  # 自定义渲染器不存在，尝试标准 cairosvg
+            if attempt == 1:
+                log.warning("  cairosvg not installed, falling back to blank image")
+                continue
+        except Exception:
+            if attempt < 2:
+                continue  # 尝试下一级 fallback
+            # PIL 也失败 → 返回 False
+            return False
+
+    return False
 
 
 def shapely_to_svg_path(geom):
@@ -140,39 +225,21 @@ def sample_to_svg(plan, canvas_size=1024):
     return "\n".join(lines)
 
 
-def render_svg_to_png(svg_code, png_path, size=1024):
-    try:
-        from rl_vectorizer.utils.svg_renderer import render_svg_cairo
-        import cairosvg
-        cairosvg.svg2png(
-            bytestring=svg_code.encode(),
-            write_to=png_path,
-            output_width=size,
-            output_height=size,
-        )
-        return True
-    except Exception:
-        pass
+CHECKPOINT_FILE = ".convert_resplan_checkpoint.json"
 
-    try:
-        import cairosvg
-        cairosvg.svg2png(
-            bytestring=svg_code.encode(),
-            write_to=png_path,
-            output_width=size,
-            output_height=size,
-        )
-        return True
-    except Exception:
-        pass
 
-    try:
-        from PIL import Image, ImageDraw
-        img = Image.new("RGB", (size, size), "white")
-        img.save(png_path)
-        return True
-    except Exception:
-        return False
+def load_checkpoint():
+    """加载处理进度检查点。"""
+    if os.path.exists(CHECKPOINT_FILE):
+        with open(CHECKPOINT_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_checkpoint(state):
+    """保存处理进度检查点。"""
+    with open(CHECKPOINT_FILE, "w") as f:
+        json.dump(state, f)
 
 
 def main():
@@ -185,73 +252,150 @@ def main():
     os.makedirs(svg_dir, exist_ok=True)
     os.makedirs(png_dir, exist_ok=True)
 
-    print("Loading ResPlan.pkl ...")
+    log.info("Loading ResPlan.pkl ...")
     if not os.path.exists(pkl_path):
-        print(f"❌ {pkl_path} not found!")
-        print("Please download ResPlan.zip from https://github.com/m-agour/ResPlan/releases/tag/1.0.0")
-        print("Then: unzip ResPlan.zip -d data/resplan/")
+        log.error(f"❌ {pkl_path} not found!\n"
+                    f"Please download ResPlan.zip from https://github.com/m-agour/ResPlan/releases/tag/1.0.0\n"
+                    f"Then: unzip ResPlan.zip -d data/resplan/")
         sys.exit(1)
     with open(pkl_path, "rb") as f:
         data = pickle.load(f)
 
     total = len(data)
-    print(f"Total samples: {total}")
+    log.info(f"Total samples: {total}")
 
+    # 加载检查点 / 扫描已有文件，支持断点续传
+    ckpt = load_checkpoint()
+    checkpoint_processed = set(ckpt.get("processed", []))
+
+    # 扫描磁盘已有文件
+    disk_existing = set()
+    if os.path.exists(svg_dir):
+        disk_existing = {f.replace(".svg", "") for f in os.listdir(svg_dir)}
+        if disk_existing:
+            log.info(f"Found {len(disk_existing)} existing SVGs on disk")
+
+    if checkpoint_processed:
+        log.info(f"Loaded checkpoint: {len(checkpoint_processed)} processed")
+
+    # 读取已有的 metadata 行（避免重复）
     jsonl_lines = []
-    svg_count = 0
-    png_count = 0
-    fail_count = 0
+    existing_jsonl_ids = set()
+    if os.path.exists(jsonl_path) and os.path.getsize(jsonl_path) > 80:
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    jsonl_lines.append(line)
+                    obj = json.loads(line)
+                    existing_jsonl_ids.add(obj.get("id", ""))
+        log.info(f"Existing metadata: {len(jsonl_lines)} lines, "
+                  f"{len(existing_jsonl_ids)} unique IDs")
+
+    svg_count = ckpt.get("svg_count", len(disk_existing))
+    png_count = ckpt.get("png_count", svg_count)
+    svg_fail = ckpt.get("svg_fail", 0)
+    png_fail = ckpt.get("png_fail", 0)
+
+    interrupted = False
 
     for i, plan in enumerate(data):
         sid = f"resplan_{plan.get('id', i):05d}"
 
-        svg_code = sample_to_svg(plan)
-        if svg_code is None:
-            fail_count += 1
+        # 跳过 checkpoint 中已完全处理（含 metadata）的
+        if sid in checkpoint_processed and sid in existing_jsonl_ids:
             continue
 
+        # 检查文件是否已存在磁盘上
         svg_path = os.path.join(svg_dir, f"{sid}.svg")
-        with open(svg_path, "w", encoding="utf-8") as f:
-            f.write(svg_code)
-        svg_count += 1
-
         png_path = os.path.join(png_dir, f"{sid}.png")
-        if render_svg_to_png(svg_code, png_path, size=1024):
-            png_count += 1
+        files_exist = os.path.exists(svg_path)
+
+        if files_exist and sid not in checkpoint_processed:
+            # 磁盘有文件但无 checkpoint → 只需生成 metadata
+            if os.path.exists(png_path):
+                pass  # png_count 已计入
+            else:
+                png_fail += 1
+            svg_code = open(svg_path).read() if os.path.exists(svg_path) else None
+        elif not files_exist:
+            # 全新处理：生成 SVG
+            svg_code = sample_to_svg(plan)
+            if svg_code is None:
+                svg_fail += 1
+                if (i + 1) % 500 == 0:
+                    save_checkpoint({
+                        "processed": sorted(checkpoint_processed | {sid}),
+                        "svg_count": svg_count,
+                        "png_count": png_count,
+                        "svg_fail": svg_fail,
+                        "png_fail": png_fail,
+                    })
+                continue
+            with open(svg_path, "w", encoding="utf-8") as f:
+                f.write(svg_code)
+            svg_count += 1
+
+            # 渲染 PNG
+            if render_svg_to_png(svg_code, png_path, size=1024):
+                png_count += 1
+            else:
+                png_fail += 1
         else:
-            png_count += 1
+            # checkpoint 中已有但 metadata 中无 → 补 metadata
+            svg_code = None  # 不需要重新处理
 
-        room_info = {}
-        for key in ["bedroom", "bathroom", "kitchen", "living", "balcony", "storage", "door", "window"]:
-            geom = plan.get(key)
-            if geom is not None and not geom.is_empty:
-                if geom.geom_type == "MultiPolygon":
-                    room_info[key] = len(list(geom.geoms))
-                elif geom.geom_type == "Polygon":
-                    room_info[key] = 1
+        # 元数据（仅当 jsonl 中缺失时写入）
+        if sid not in existing_jsonl_ids:
+            room_info = {}
+            for key in ["bedroom", "bathroom", "kitchen", "living", "balcony", "storage", "door", "window"]:
+                geom = plan.get(key)
+                if geom is not None and not geom.is_empty:
+                    if geom.geom_type == "MultiPolygon":
+                        room_info[key] = len(list(geom.geoms))
+                    elif geom.geom_type == "Polygon":
+                        room_info[key] = 1
+            jsonl_lines.append(json.dumps({
+                "id": sid,
+                "svg_file": f"svgs/{sid}.svg",
+                "bitmap_file": f"bitmaps/{sid}.png",
+                "unitType": plan.get("unitType", "unknown"),
+                "area": float(plan.get("area", 0)),
+                "net_area": float(plan.get("net_area", 0)),
+                "rooms": room_info,
+            }, ensure_ascii=False))
+            existing_jsonl_ids.add(sid)
 
-        jsonl_lines.append(json.dumps({
-            "id": sid,
-            "svg_file": f"svgs/{sid}.svg",
-            "bitmap_file": f"bitmaps/{sid}.png",
-            "unitType": plan.get("unitType", "unknown"),
-            "area": float(plan.get("area", 0)),
-            "net_area": float(plan.get("net_area", 0)),
-            "rooms": room_info,
-        }, ensure_ascii=False))
+        # 更新 checkpoint
+        checkpoint_processed.add(sid)
 
-        if (i + 1) % 1000 == 0:
-            print(f"  Progress: {i + 1}/{total} ...")
+        # 每 500 个保存检查点
+        if (i + 1) % 500 == 0:
+            save_checkpoint({
+                "processed": sorted(checkpoint_processed),
+                "svg_count": svg_count,
+                "png_count": png_count,
+                "svg_fail": svg_fail,
+                "png_fail": png_fail,
+            })
+            log.info(f"  Progress: {i + 1}/{total} (svg={svg_count}, png_ok={png_count}, "
+                      f"png_fail={png_fail}, svg_fail={svg_fail})")
 
+    # 写入最终 metadata.jsonl
     with open(jsonl_path, "w", encoding="utf-8") as f:
         f.write("\n".join(jsonl_lines) + "\n")
 
-    print(f"\nDone!")
-    print(f"  SVG files: {svg_count} -> {svg_dir}")
-    print(f"  PNG files: {png_count} -> {png_dir}")
-    print(f"  Failed: {fail_count}")
-    print(f"  Metadata: {jsonl_path}")
-    print(f"  Total: {svg_count} samples")
+    # 清理检查点
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
+
+    log.info(f"\nDone!")
+    log.info(f"  SVG files: {svg_count} -> {svg_dir}")
+    log.info(f"  PNG files: {png_count} -> {png_dir}")
+    log.info(f"  PNG render failures: {png_fail}")
+    log.info(f"  SVG generation failures: {svg_fail}")
+    log.info(f"  Metadata: {jsonl_path}")
+    log.info(f"  Total: {svg_count} samples")
 
 
 if __name__ == "__main__":

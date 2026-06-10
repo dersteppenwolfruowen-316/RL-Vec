@@ -3,11 +3,14 @@
 输出 JSONL 格式:
   {"id": str, "image": str, "conversations": [{"from": "user", "value": ...}, {"from": "assistant", "value": ...}], "metadata": dict}
 """
-import sys, os, json, re
+import sys, os, json, re, signal, logging
 from pathlib import Path
 from lxml import etree
 from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger("prepare_sft_data")
 
 # 颜色 -> 语义映射
 STROKE_LABELS = {
@@ -379,15 +382,48 @@ def main():
                 metadata_map[m["id"]] = m
 
     svg_files = sorted(svg_dir.glob("*.svg"))
-    print(f"Processing {len(svg_files)} SVGs...")
+    log.info(f"Processing {len(svg_files)} SVGs...")
+
+    # 断点续传：加载已有 output，跳过已处理的 ID
+    existing_ids = set()
+    if output_path.exists():
+        with open(output_path) as f:
+            for line in f:
+                existing_ids.add(json.loads(line.strip())["id"])
+        log.info(f"  Found existing output with {len(existing_ids)} entries, will skip")
+
+    # 拦截 Ctrl+C 优雅退出
+    interrupted = False
+    def _sigint(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+        log.warning("\n  Interrupt received, finishing current file then saving...")
+    signal.signal(signal.SIGINT, _sigint)
 
     count = 0
-    with open(output_path, "w") as out:
+    skip_count = 0
+    error_count = 0
+
+    with open(output_path, "a" if existing_ids else "w") as out:
+        # 如果输出已存在且非空，先确保文件尾有换行
+        if existing_ids and output_path.stat().st_size > 0:
+            out.seek(0, 2)
+            # 确保最后有换行
+            out.write("")
+
         for svg_path in svg_files:
+            if interrupted:
+                log.info("  Stopping early (interrupt requested)...")
+                break
+
+            sid = svg_path.stem
+            if sid in existing_ids:
+                skip_count += 1
+                continue
+
             try:
-                meta = metadata_map.get(svg_path.stem)
+                meta = metadata_map.get(sid)
                 result = process_svg(svg_path, meta)
-                # 组装 SFT 格式
                 sample = {
                     "id": result["id"],
                     "image": str(DATA_DIR / "bitmaps" / f"{result['id']}.png"),
@@ -407,19 +443,26 @@ def main():
                 out.write(json.dumps(sample, ensure_ascii=False) + "\n")
                 count += 1
                 if count % 2000 == 0:
-                    print(f"  {count}/{len(svg_files)}")
+                    log.info(f"  {count}/{len(svg_files)} (skip={skip_count}, err={error_count})")
             except Exception as e:
-                print(f"  X {svg_path.name}: {e}")
+                error_count += 1
+                log.warning(f"  X {svg_path.name}: {e}")
 
-    print(f"\nDone! {count} samples -> {output_path}")
+    log.info(f"\nDone! {count} samples -> {output_path}")
+    if skip_count:
+        log.info(f"  Skipped (already exist): {skip_count}")
+    if error_count:
+        log.info(f"  Errors: {error_count}")
+    if interrupted:
+        log.info(f"  (Interrupted before all SVGs were processed)")
 
     # 打印一个样例
     if count > 0:
-        print("\n=== Sample ===")
+        log.info("\n=== Sample ===")
         sample = json.loads(open(output_path).readline())
-        print(f"ID: {sample['id']}")
-        print(f"Instruction (first 500 chars):")
-        print(sample["conversations"][1]["value"][:500])
+        log.info(f"ID: {sample['id']}")
+        log.info(f"Instruction (first 500 chars):")
+        log.info(sample["conversations"][1]["value"][:500])
 
 
 if __name__ == "__main__":
